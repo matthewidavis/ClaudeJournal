@@ -18,7 +18,7 @@ Nothing leaves your machine. The "AI" that writes the journal is the same `claud
 
 ## Features
 
-- 📖 **Daily diary in your voice.** Structured per-session briefs distilled into flowing first-person prose. No bullet dumps, no third-person reports.
+- 📖 **Daily diary in a human voice.** Structured per-session briefs distilled into flowing first-person prose. No bullet dumps, no third-person reports.
 - 🗓 **Weekly + monthly retrospectives.** Map-reduce over the daily entries. Step back and see arcs without writing them.
 - 🎧 **Pre-rendered audio.** Every entry, weekly, and monthly is synthesized to WAV via Piper TTS (LibriTTS-high by default). Play in the browser with a scrub bar and live sentence highlighting. Works on any LAN device, no HTTPS required.
 - 🔍 **Hybrid search + chat.** BM25 + vector retrieval over the corpus. Ask "*what did I learn about ONNX?*" via the floating chat bubble.
