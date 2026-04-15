@@ -1,0 +1,26 @@
+# Per-machine Claude Code state that leaks in via cwd
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Generated database + runtime state
+db/journal.sqlite
+db/journal.sqlite-wal
+db/journal.sqlite-shm
+db/last_run.json
+db/serve.pid
+
+# Piper voice models (large binary, auto-downloaded on first audio run)
+db/piper_models/
+
+# Rendered static site (re-built from DB)
+out/
+
+# Transient synth artifacts
+*.new.wav

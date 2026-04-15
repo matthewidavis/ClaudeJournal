@@ -1,0 +1,27 @@
+{
+  "claude_home": null,
+  "db_path": "db/journal.sqlite",
+  "include_projects": [],
+  "exclude_projects": [],
+  "redact_patterns": [
+    "(?i)\\b(sk-[a-z0-9]{20,}|ghp_[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{10,})\\b",
+    "(?i)\\b(api[_-]?key|secret|token|password)\\s*[:=]\\s*[\"']?[^\\s\"']{8,}[\"']?"
+  ],
+  "correction_patterns": [
+    "(?i)^\\s*(no|nope|stop|wait|don'?t|instead|actually|undo|revert|not quite|that'?s not)\\b",
+    "(?i)\\b(why (did|are) you|you shouldn'?t have|i said|i told you)\\b"
+  ],
+  "appreciation_patterns": [
+    "(?i)\\b(thanks|thank you|perfect|great|nice|awesome|exactly|yes that|love it|works)\\b"
+  ],
+  "max_prompt_chars": 500,
+  "brief_model": "haiku",
+  "narration_model": "sonnet",
+  "rollup_model": "sonnet",
+  "min_events_for_brief": 20,
+  "schedule_hour": 23,
+  "schedule_minute": 30,
+  "max_workers": 4,
+  "interludes_enabled": true,
+  "interlude_seeds": []
+}

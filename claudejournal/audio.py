@@ -1,0 +1,171 @@
+"""Pre-render diary entries to WAV files via Piper TTS so the static site
+can play audio over plain HTTP — no SharedArrayBuffer / OPFS required on
+the client. Uses the same Piper voices vits-web wraps in the browser.
+
+Naming convention written under out/audio/:
+  daily-<YYYY-MM-DD>.wav
+  weekly-<ISO-week>.wav
+
+Cache: a side-by-side .json with sha1(prose|voice). Re-runs skip unchanged.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+import urllib.request
+from pathlib import Path
+
+DEFAULT_VOICE = "en_US-libritts-high"
+HF_BASE = "https://huggingface.co/rhasspy/piper-voices/resolve/main"
+
+# voice id -> relative model path on huggingface
+VOICE_PATHS = {
+    "en_US-libritts-high":     "en/en_US/libritts/high/en_US-libritts-high.onnx",
+    "en_US-libritts_r-medium": "en/en_US/libritts_r/medium/en_US-libritts_r-medium.onnx",
+    "en_US-hfc_female-medium": "en/en_US/hfc_female/medium/en_US-hfc_female-medium.onnx",
+    "en_US-hfc_male-medium":   "en/en_US/hfc_male/medium/en_US-hfc_male-medium.onnx",
+    "en_US-amy-medium":        "en/en_US/amy/medium/en_US-amy-medium.onnx",
+    "en_US-ryan-high":         "en/en_US/ryan/high/en_US-ryan-high.onnx",
+    "en_US-lessac-high":       "en/en_US/lessac/high/en_US-lessac-high.onnx",
+    "en_GB-alan-medium":       "en/en_GB/alan/medium/en_GB-alan-medium.onnx",
+    "en_GB-jenny_dioco-medium":"en/en_GB/jenny_dioco/medium/en_GB-jenny_dioco-medium.onnx",
+}
+
+
+def _download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    print(f"  fetching {url}")
+    try:
+        with urllib.request.urlopen(url) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+        tmp.replace(dest)
+    except BaseException:
+        # On any failure (network, KeyboardInterrupt, etc), drop the
+        # half-written .part so a retry starts cleanly.
+        try: tmp.unlink()
+        except FileNotFoundError: pass
+        raise
+
+
+def ensure_model(voice: str, models_dir: Path) -> Path:
+    """Download the .onnx + .onnx.json for `voice` if missing. Returns the
+    .onnx path to pass to piper."""
+    if voice not in VOICE_PATHS:
+        raise ValueError(f"Unknown voice {voice!r}. Known: {sorted(VOICE_PATHS)}")
+    rel = VOICE_PATHS[voice]
+    onnx = models_dir / Path(rel).name
+    meta = onnx.with_suffix(onnx.suffix + ".json")
+    if not onnx.exists():
+        _download(f"{HF_BASE}/{rel}", onnx)
+    if not meta.exists():
+        _download(f"{HF_BASE}/{rel}.json", meta)
+    return onnx
+
+
+def synthesize(text: str, out_wav: Path, model_path: Path) -> None:
+    """Shell out to piper CLI. Writes atomically: synth to a sibling .new.wav
+    then rename — so an existing old WAV stays serveable until the new one
+    is ready (important when re-rendering in a different voice)."""
+    out_wav.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_wav.with_suffix(".new.wav")
+    proc = subprocess.run(
+        ["piper", "--model", str(model_path), "--output_file", str(tmp)],
+        input=text.encode("utf-8"),
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        try: tmp.unlink()
+        except FileNotFoundError: pass
+        raise RuntimeError(f"piper failed: {proc.stderr.decode('utf-8','replace')[:500]}")
+    tmp.replace(out_wav)  # atomic on same filesystem
+
+
+def _hash(text: str, voice: str) -> str:
+    h = hashlib.sha1()
+    h.update(voice.encode("utf-8")); h.update(b"\0"); h.update(text.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _normalize_text(text: str) -> str:
+    """Match the in-browser text cleanup so audio matches what users see/hear
+    via the live TTS path: drop [YYYY-MM-DD] anchors, collapse whitespace."""
+    import re
+    t = re.sub(r"\[\d{4}-\d{2}-\d{2}\]", "", text)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
+                      verbose: bool = True) -> dict:
+    """Walk daily + weekly narrations in the DB and render each to a WAV.
+
+    Returns stats dict. Skips entries whose (text, voice) hash matches the
+    cache manifest, so re-runs are cheap.
+    """
+    from claudejournal.db import connect
+
+    if shutil.which("piper") is None:
+        raise RuntimeError(
+            "piper CLI not found on PATH. Install with: pip install piper-tts"
+        )
+
+    audio_dir = out_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = audio_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        manifest = {}
+
+    models_dir = cfg.db_path.parent / "piper_models"
+    model_path = ensure_model(voice, models_dir)
+
+    conn = connect(cfg.db_path)
+    # Sort key is the date for daily entries, the ISO-week 'YYYY-Www' for weekly.
+    # Both sort lexicographically into chronological order, so reverse=True
+    # gives newest-first — users hear recent content while older renders.
+    rows: list[tuple[str, str, str, str]] = []  # (sortkey, base, kind, prose)
+    for r in conn.execute(
+        "SELECT date, prose FROM narrations WHERE scope='daily' AND prose IS NOT NULL AND prose != ''"
+    ):
+        rows.append((r["date"], f"daily-{r['date']}", "daily", r["prose"]))
+    for r in conn.execute(
+        "SELECT key, prose FROM narrations WHERE scope='weekly' AND prose IS NOT NULL AND prose != ''"
+    ):
+        rows.append((r["key"], f"weekly-{r['key']}", "weekly", r["prose"]))
+    for r in conn.execute(
+        "SELECT key, prose FROM narrations WHERE scope='monthly' AND prose IS NOT NULL AND prose != ''"
+    ):
+        # Month key "YYYY-MM" — suffix z so it sorts after weekly/daily for same date
+        rows.append((f"{r['key']}-ZZ", f"monthly-{r['key']}", "monthly", r["prose"]))
+    conn.close()
+    rows.sort(key=lambda x: x[0], reverse=True)
+
+    n_skipped = n_made = n_failed = 0
+    for _sortkey, base, kind, prose in rows:
+        text = _normalize_text(prose)
+        if not text:
+            continue
+        h = _hash(text, voice)
+        wav = audio_dir / f"{base}.wav"
+        if wav.exists() and manifest.get(base) == h:
+            n_skipped += 1
+            continue
+        if verbose:
+            print(f"  {kind:<7} {base}  ({len(text)} chars)")
+        try:
+            synthesize(text, wav, model_path)
+            manifest[base] = h
+            n_made += 1
+        except Exception as exc:
+            n_failed += 1
+            if verbose:
+                print(f"    failed: {exc}", file=sys.stderr)
+
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), "utf-8")
+    return {"made": n_made, "skipped": n_skipped, "failed": n_failed,
+            "voice": voice, "audio_dir": str(audio_dir)}

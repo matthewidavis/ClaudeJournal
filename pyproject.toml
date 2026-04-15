@@ -1,0 +1,17 @@
+[project]
+name = "claudejournal"
+version = "0.1.0"
+description = "Turns local Claude Code logs into a human-voiced diary"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+claudejournal = "claudejournal.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["claudejournal*"]
