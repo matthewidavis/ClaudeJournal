@@ -1,3 +1,5 @@
+
+
 <img width="764" height="320" alt="image" src="https://github.com/user-attachments/assets/377563c3-7f1d-475d-91d2-aa1d8675679c" />
 
 
@@ -13,7 +15,7 @@ You spend hours every day in Claude Code and almost none of it sticks. Sessions 
 
 ClaudeJournal reads the local logs Claude Code already keeps and turns them into a **first-person diary**: daily entries written as if *you* wrote them, weekly and monthly retrospectives, a searchable archive, audio narration you can play on a walk, and an MCP-exposed memory layer your future Claude sessions can query unprompted.
 
-<img width="940" alt="ClaudeJournal interface" src="https://github.com/user-attachments/assets/52f5e8a1-f09f-4516-95ad-3e12d41c5776" />
+https://github.com/user-attachments/assets/67881737-edaf-419e-a840-77288868f165
 
 Nothing leaves your machine. The "AI" that writes the journal is the same `claude` CLI you're already using.
 
