@@ -24,3 +24,8 @@ out/
 
 # Transient synth artifacts
 *.new.wav
+
+# Local demo / marketing assets — hosted on GitHub's CDN instead
+*.mp4
+*.mov
+*.webm

@@ -1,4 +1,5 @@
-# ClaudeJournal
+<img width="764" height="320" alt="image" src="https://github.com/user-attachments/assets/377563c3-7f1d-475d-91d2-aa1d8675679c" />
+
 
 > Your Claude Code sessions, told back to you as a diary you can read, listen to, search, and ask questions of — entirely on your own machine.
 
@@ -6,13 +7,13 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![Local-first](https://img.shields.io/badge/data-100%25%20local-success.svg)](#privacy)
 
-<img width="940" alt="ClaudeJournal interface" src="https://github.com/user-attachments/assets/52f5e8a1-f09f-4516-95ad-3e12d41c5776" />
-
 ## Why this exists
 
 You spend hours every day in Claude Code and almost none of it sticks. Sessions scroll past, lessons get re-learned, decisions get re-made because nobody wrote them down — least of all you.
 
 ClaudeJournal reads the local logs Claude Code already keeps and turns them into a **first-person diary**: daily entries written as if *you* wrote them, weekly and monthly retrospectives, a searchable archive, audio narration you can play on a walk, and an MCP-exposed memory layer your future Claude sessions can query unprompted.
+
+<img width="940" alt="ClaudeJournal interface" src="https://github.com/user-attachments/assets/52f5e8a1-f09f-4516-95ad-3e12d41c5776" />
 
 Nothing leaves your machine. The "AI" that writes the journal is the same `claude` CLI you're already using.
 
