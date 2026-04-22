@@ -8,7 +8,10 @@ param(
 # then kicks off the pipeline refresh in the background so it does not block.
 
 $ErrorActionPreference = "Continue"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Repo root is two levels up from scripts/windows/<this file>. Resolving up
+# front so logs + db/ land in the project's own paths, not inside scripts/.
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = (Resolve-Path (Join-Path $scriptDir "..\..")).Path
 Set-Location $root
 
 $logDir = Join-Path $root "db"

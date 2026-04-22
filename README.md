@@ -53,7 +53,7 @@ Then open `http://localhost:8888/`, or visit it from any device on your LAN at `
 
 ### Run it at login (Windows)
 
-`start-claudejournal.bat` / `.ps1` launch the server hidden, write logs to `db/*.log`, and kick a background refresh. `stop-claudejournal.bat` / `.ps1` shut it down cleanly via the pid file. Wire the start script into Task Scheduler (Trigger: "At log on", Action: run the `.bat`) and the journal is always reachable at `http://localhost:8888/` when you're logged in.
+`scripts/windows/start-claudejournal.bat` / `.ps1` launch the server hidden, write logs to `db/*.log`, and kick a background refresh. `scripts/windows/stop-claudejournal.bat` / `.ps1` shut it down cleanly via the pid file. Wire the start script into Task Scheduler (Trigger: "At log on", Action: run the `.bat`; Start-in doesn't matter — the script resolves its own repo root) and the journal is always reachable at `http://localhost:8888/` when you're logged in.
 
 ## How it works
 

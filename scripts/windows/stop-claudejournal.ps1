@@ -1,5 +1,7 @@
 $ErrorActionPreference = "Continue"
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+# Repo root is two levels up from scripts/windows/<this file>.
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = (Resolve-Path (Join-Path $scriptDir "..\..")).Path
 Set-Location $root
 
 # Primary path: the app's own pid-file-based stop command.
