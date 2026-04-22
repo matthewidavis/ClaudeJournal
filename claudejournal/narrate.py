@@ -1,6 +1,7 @@
 """Daily + project-day narration orchestration."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -17,7 +18,8 @@ from claudejournal.threads import available_anchors, compute_threads
 def _load_briefs_for_day(conn: sqlite3.Connection, date: str,
                          project_id: str | None = None) -> list[dict]:
     sql = """
-      SELECT b.session_id, b.project_id, b.brief_json, p.display_name AS project_name
+      SELECT b.session_id, b.project_id, b.brief_json, b.input_hash,
+             p.display_name AS project_name
       FROM session_briefs b JOIN projects p ON p.id = b.project_id
       WHERE b.date = ?
     """
@@ -36,9 +38,32 @@ def _load_briefs_for_day(conn: sqlite3.Connection, date: str,
         data["_session_id"] = r["session_id"]
         data["_project_name"] = r["project_name"]
         data["_project_id"] = r["project_id"]
+        data["_brief_input_hash"] = r["input_hash"] or ""
         data["_lexical"] = lexical_signals(conn, r["session_id"])
         out.append(data)
     return out
+
+
+def _narration_input_hash(briefs: list[dict], scope: str,
+                          project_id: str | None = None) -> str:
+    """Stable hash over the briefs that feed a narration. Changes when a new
+    brief lands for the day, or when an existing brief's input_hash shifts
+    (session grew / user edited prompts). Cascades invalidation up from briefs."""
+    h = hashlib.sha256()
+    h.update(NARRATION_PROMPT_VERSION.encode())
+    h.update(scope.encode())
+    if project_id:
+        h.update(project_id.encode())
+    # Sort by session_id so ordering within a day can't change the hash.
+    items = sorted(
+        (b["_session_id"], b.get("_brief_input_hash", "")) for b in briefs
+    )
+    for sid, bh in items:
+        h.update(sid.encode("utf-8", errors="replace"))
+        h.update(b"\x00")
+        h.update(bh.encode("utf-8", errors="replace"))
+        h.update(b"\x01")
+    return h.hexdigest()[:16]
 
 
 def _prior_entry(conn: sqlite3.Connection, scope: str, key: str, date: str,
@@ -58,29 +83,36 @@ def _prior_entry(conn: sqlite3.Connection, scope: str, key: str, date: str,
 
 
 def _persist(conn: sqlite3.Connection, scope: str, key: str, date: str,
-             project_id: str | None, prose: str, model: str) -> None:
+             project_id: str | None, prose: str, model: str,
+             input_hash: str) -> None:
     conn.execute(
         """
         INSERT INTO narrations (scope, key, date, project_id, prose,
-            prompt_version, generated_at, model)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            prompt_version, input_hash, generated_at, model)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(scope, key) DO UPDATE SET
             prose = excluded.prose,
             prompt_version = excluded.prompt_version,
+            input_hash = excluded.input_hash,
             generated_at = excluded.generated_at,
             model = excluded.model
         """,
         (scope, key, date, project_id, prose,
-         NARRATION_PROMPT_VERSION, datetime.now(timezone.utc).isoformat(), model),
+         NARRATION_PROMPT_VERSION, input_hash,
+         datetime.now(timezone.utc).isoformat(), model),
     )
 
 
-def _already_current(conn: sqlite3.Connection, scope: str, key: str) -> bool:
+def _already_current(conn: sqlite3.Connection, scope: str, key: str,
+                     input_hash: str) -> bool:
     row = conn.execute(
-        "SELECT prompt_version FROM narrations WHERE scope=? AND key=?",
+        "SELECT prompt_version, input_hash FROM narrations WHERE scope=? AND key=?",
         (scope, key),
     ).fetchone()
-    return bool(row and row["prompt_version"] == NARRATION_PROMPT_VERSION)
+    if not row:
+        return False
+    return (row["prompt_version"] == NARRATION_PROMPT_VERSION
+            and row["input_hash"] == input_hash)
 
 
 def run(cfg: Config, *, narrator: Narrator | None = None,
@@ -132,7 +164,8 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                 if progress:
                     try: progress(done, total, f"daily {d}")
                     except Exception: pass
-                if not force and _already_current(conn, "daily", key):
+                day_hash = _narration_input_hash(all_briefs, "daily")
+                if not force and _already_current(conn, "daily", key, day_hash):
                     stats["skipped"] += 1
                     if verbose:
                         print(f"  skip daily {d}")
@@ -158,7 +191,7 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                     if dry_run:
                         if verbose: print(res.prose[:600])
                     else:
-                        _persist(conn, "daily", key, d, None, res.prose, res.model)
+                        _persist(conn, "daily", key, d, None, res.prose, res.model, day_hash)
                         stats["daily_generated"] += 1
                         if verbose: print(f"    -> {len(res.prose)} chars")
 
@@ -174,7 +207,8 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                     if progress:
                         try: progress(done, total, f"{pname} · {d}")
                         except Exception: pass
-                    if not force and _already_current(conn, "project_day", key):
+                    proj_hash = _narration_input_hash(pbriefs, "project_day", pid)
+                    if not force and _already_current(conn, "project_day", key, proj_hash):
                         stats["skipped"] += 1
                         continue
                     prior = _prior_entry(conn, "project_day", key, d, pid)
@@ -198,7 +232,7 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                     if dry_run:
                         if verbose: print(res.prose[:400])
                     else:
-                        _persist(conn, "project_day", key, d, pid, res.prose, res.model)
+                        _persist(conn, "project_day", key, d, pid, res.prose, res.model, proj_hash)
                         stats["project_day_generated"] += 1
                         if verbose: print(f"    -> {len(res.prose)} chars")
 

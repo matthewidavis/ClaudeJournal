@@ -18,7 +18,7 @@
   "brief_model": "haiku",
   "narration_model": "sonnet",
   "rollup_model": "sonnet",
-  "min_events_for_brief": 20,
+  "min_events_for_brief": 5,
   "schedule_hour": 23,
   "schedule_minute": 30,
   "max_workers": 4,

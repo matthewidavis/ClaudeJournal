@@ -6,6 +6,7 @@ Same contract as rollup.py: [YYYY-MM-DD] anchors cite real days, no
 forward references, no invention."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -13,6 +14,10 @@ from datetime import datetime
 
 from claudejournal.config import Config
 from claudejournal.db import connect
+
+# Bumping this invalidates every monthly rollup on next run. Keep in sync
+# with the MONTHLY_SYSTEM prompt below when its semantics change.
+MONTHLY_PROMPT_VERSION = "v1"
 
 
 MONTHLY_SYSTEM = """You are the user's journal, producing a short monthly retrospective in their first-person voice, built on top of the weekly rollups and daily entries from that month.
@@ -53,11 +58,12 @@ def _load_weeklies_overlapping(conn: sqlite3.Connection, year_month: str) -> lis
     """Weekly rollups whose anchor date falls inside the month."""
     start, end = _month_bounds(year_month)
     rows = conn.execute(
-        """SELECT key, date, prose FROM narrations
+        """SELECT key, date, prose, input_hash FROM narrations
            WHERE scope='weekly' AND date BETWEEN ? AND ? ORDER BY date""",
         (start, end),
     ).fetchall()
-    return [{"iso_week": r["key"], "date": r["date"], "prose": r["prose"]} for r in rows]
+    return [{"iso_week": r["key"], "date": r["date"], "prose": r["prose"],
+             "input_hash": r["input_hash"] or ""} for r in rows]
 
 
 def _load_daily_dates(conn: sqlite3.Connection, year_month: str) -> list[str]:
@@ -70,6 +76,26 @@ def _load_daily_dates(conn: sqlite3.Connection, year_month: str) -> list[str]:
         (start, end),
     ).fetchall()
     return [r["date"] for r in rows]
+
+
+def _monthly_input_hash(weeklies: list[dict], anchor_dates: list[str]) -> str:
+    """Stable hash over the weekly rollups + daily anchor dates feeding
+    this month. Weekly input_hash cascades up from daily/brief changes;
+    anchor dates ensure a newly-present day still invalidates even if no
+    weekly has been regenerated yet."""
+    h = hashlib.sha256()
+    h.update(MONTHLY_PROMPT_VERSION.encode())
+    for w in sorted(weeklies, key=lambda x: x["iso_week"]):
+        h.update(w["iso_week"].encode())
+        h.update(b"\x00")
+        token = w.get("input_hash") or f"len:{len(w.get('prose') or '')}"
+        h.update(token.encode("utf-8", errors="replace"))
+        h.update(b"\x01")
+    h.update(b"\x02")
+    for d in sorted(anchor_dates):
+        h.update(d.encode())
+        h.update(b"\x03")
+    return h.hexdigest()[:16]
 
 
 def _build_monthly_message(year_month: str, weeklies: list[dict],
@@ -94,17 +120,20 @@ def _build_monthly_message(year_month: str, weeklies: list[dict],
 def narrate_month(conn: sqlite3.Connection, year_month: str, *,
                   model: str = "sonnet", force: bool = False,
                   binary: str = "claude") -> dict | None:
-    if not force:
-        row = conn.execute(
-            "SELECT prose FROM narrations WHERE scope='monthly' AND key = ?", (year_month,)
-        ).fetchone()
-        if row:
-            return {"year_month": year_month, "skipped": True}
-
     weeklies = _load_weeklies_overlapping(conn, year_month)
     anchor_dates = _load_daily_dates(conn, year_month)
     if not weeklies and not anchor_dates:
         return None
+    month_hash = _monthly_input_hash(weeklies, anchor_dates)
+
+    if not force:
+        row = conn.execute(
+            "SELECT prompt_version, input_hash FROM narrations WHERE scope='monthly' AND key = ?",
+            (year_month,),
+        ).fetchone()
+        if row and row["prompt_version"] == MONTHLY_PROMPT_VERSION and row["input_hash"] == month_hash:
+            return {"year_month": year_month, "skipped": True}
+
     user_msg = _build_monthly_message(year_month, weeklies, anchor_dates)
 
     cmd = [
@@ -129,12 +158,15 @@ def narrate_month(conn: sqlite3.Connection, year_month: str, *,
     start, _ = _month_bounds(year_month)
     conn.execute(
         """INSERT INTO narrations (scope, key, date, project_id, prose,
-               prompt_version, generated_at, model)
-           VALUES ('monthly', ?, ?, NULL, ?, 'v1', ?, ?)
+               prompt_version, input_hash, generated_at, model)
+           VALUES ('monthly', ?, ?, NULL, ?, ?, ?, ?, ?)
            ON CONFLICT(scope, key) DO UPDATE SET
                prose=excluded.prose, date=excluded.date,
+               prompt_version=excluded.prompt_version,
+               input_hash=excluded.input_hash,
                generated_at=excluded.generated_at, model=excluded.model""",
-        (year_month, start, prose, datetime.now().isoformat(), model),
+        (year_month, start, prose, MONTHLY_PROMPT_VERSION, month_hash,
+         datetime.now().isoformat(), model),
     )
     conn.commit()
     return {"year_month": year_month, "chars": len(prose),

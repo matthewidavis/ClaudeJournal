@@ -63,6 +63,20 @@ body {
 .filter-chip.active:hover { background: #6f3916; }
 .filter-chip.active::after { content: " ×"; opacity: 0.8; }
 .filter-chip.axis { font-weight: 500; }
+
+/* Row 0 — "mode" chips (Find + view: Daily/Weekly/Monthly). Softer default
+   look distinguishes them from the per-facet axis row. Active state is the
+   same accent fill so the selection feedback stays consistent across rows. */
+.filter-modes { margin-bottom: 8px; }
+.filter-chip.mode {
+  border-color: var(--accent-soft);
+  color: var(--accent);
+  background: transparent;
+  font-weight: 500;
+}
+.filter-chip.mode:hover { background: var(--accent-soft); color: var(--paper); border-color: var(--accent-soft); }
+.filter-chip.mode.active { background: var(--accent); color: var(--paper); border-color: var(--accent); }
+.filter-chip.mode.active:hover { background: #6f3916; }
 .filter-empty {
   text-align: center; color: var(--muted); font-style: italic;
   padding: 40px 20px; font-size: 15px;
@@ -607,7 +621,31 @@ FILTER_WIDGET = """
   if (!data.projects.length && !data.weeks.length && !data.months.length
       && !data.moods.length && !data.learnings.length && !data.years.length
       && !(data.tags || []).length) return;
-  const state = {axis: null, value: null};
+  // `axis` + `value` drive the per-facet filter row (Project, Topic, …, Find).
+  // `views` is a Set of entry types currently shown. Row 0 chips toggle
+  // membership — multi-select, not mutually exclusive. Default is
+  // {daily, weekly}: day entries read as the timeline, weekly rollups give
+  // natural rhythm breaks. Monthly is kept off by default (archival, would
+  // otherwise clutter casual scrolling). Persisted to localStorage so the
+  // preference survives reloads.
+  const VIEWS_KEY = 'cj.views';
+  const DEFAULT_VIEWS = ['daily', 'weekly'];
+  function loadViews() {
+    try {
+      const raw = localStorage.getItem(VIEWS_KEY);
+      // Never stored = first visit: apply the curated default.
+      if (raw === null) return new Set(DEFAULT_VIEWS);
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return new Set(DEFAULT_VIEWS);
+      // Explicit empty set is a valid state (= show all) — preserve it.
+      return new Set(arr.filter(x => ['daily','weekly','monthly'].includes(x)));
+    } catch (e) { return new Set(DEFAULT_VIEWS); }
+  }
+  function saveViews(views) {
+    try { localStorage.setItem(VIEWS_KEY, JSON.stringify([...views])); } catch (e) {}
+  }
+  const state = {axis: null, value: null, views: loadViews()};
+  const modesRow = document.getElementById('filter-modes');
   const axesRow = document.getElementById('filter-axes');
   const options = document.getElementById('filter-options');
   if (!axesRow || !options) return;
@@ -623,7 +661,12 @@ FILTER_WIDGET = """
     return a;
   }
   const AXIS_LABELS = {project: 'Project', topic: 'Topic', year: 'Year', month: 'Month', week: 'Week', mood: 'Mood', learning: 'Aha moment', search: 'Find'};
-  const AXIS_KEYS = ['project', 'topic', 'year', 'month', 'week', 'mood', 'learning', 'search'];
+  // Entry-type filter. 'all' shows everything; the others hide the two
+  // element kinds that don't match (dailies are <article.entry>, weeklies
+  // live in .week-rollup-wrap, monthlies in .month-rollup-wrap).
+  const VIEW_KEYS = ['daily', 'weekly', 'monthly'];
+  const VIEW_LABELS = {daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly'};
+  const AXIS_KEYS = ['project', 'topic', 'year', 'month', 'week', 'mood', 'learning'];
 
   const poolFor = (axis) => {
     if (axis === 'project') return data.projects;
@@ -633,9 +676,36 @@ FILTER_WIDGET = """
     return data[axis + 's'] || [];
   };
 
+  function clearChildren(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
   function render() {
-    axesRow.innerHTML = '';
-    options.innerHTML = '';
+    if (modesRow) clearChildren(modesRow);
+    clearChildren(axesRow);
+    clearChildren(options);
+
+    // --- Row 0: "mode" chips. Find (search) sits here alongside the
+    // entry-type toggle (Daily/Weekly/Monthly). Selecting a view chip is
+    // exclusive — clicking the active one reverts to 'all'. ---
+    if (modesRow) {
+      const findActive = state.axis === 'search';
+      modesRow.appendChild(makeChip(AXIS_LABELS.search, 'mode axis-search' + (findActive ? ' active' : ''), () => {
+        if (state.axis === 'search') { state.axis = null; state.value = null; }
+        else { state.axis = 'search'; state.value = null; }
+        apply();
+      }));
+      VIEW_KEYS.forEach(v => {
+        const isActive = state.views.has(v);
+        modesRow.appendChild(makeChip(VIEW_LABELS[v], 'mode view-' + v + (isActive ? ' active' : ''), () => {
+          // Toggle this view in/out. An empty set is treated as "show all"
+          // by the visibility helper below, so deselecting every chip
+          // reads the same as selecting every chip — intuitive on click.
+          if (isActive) state.views.delete(v);
+          else state.views.add(v);
+          saveViews(state.views);
+          apply();
+        }));
+      });
+    }
 
     // --- Axis row: always present, stable positions. Click toggles active. ---
     AXIS_KEYS.forEach(k => {
@@ -780,11 +850,22 @@ FILTER_WIDGET = """
 
     let anyShown = 0;
     const entries = feed.querySelectorAll('article.entry');
+    // Empty selection = show all — so the user can deselect every chip and
+    // land on the same view as selecting every chip. Intuition wins over
+    // forcing "at least one".
+    const viewShows = v => state.views.size === 0 || state.views.has(v);
+    const viewHidesDailies = !viewShows('daily');
     entries.forEach(el => {
       // Restore pristine HTML when ANY highlight-producing state changes.
       const restore = searching || wasSearching || highlightingTopic || wasHighlightingTopic;
       if (restore && origCache.has(el)) {
         el.innerHTML = origCache.get(el);
+      }
+
+      if (viewHidesDailies) {
+        el.classList.add('filter-hidden');
+        el.classList.remove('search-hidden');
+        return;
       }
 
       let axisShow = true;
@@ -839,19 +920,45 @@ FILTER_WIDGET = """
       }
     });
 
+    // Weekly rollup blocks — visible if 'weekly' is in the set, or if the
+    // set is empty (= show all).
+    const weeklyAllowed = viewShows('weekly');
     feed.querySelectorAll('.week-break, .week-rollup-wrap').forEach(el => {
-      let show = true;
-      if (searching) show = false;
-      else if (state.axis && state.value) {
-        if (state.axis === 'week') show = el.dataset.week === state.value;
-        else if (state.axis === 'month') {
-          const w = el.dataset.week;
-          show = w && !!feed.querySelector('article.entry[data-week="' + w + '"][data-month="' + state.value + '"]');
+      let show = weeklyAllowed;
+      if (show) {
+        if (searching) show = false;
+        else if (state.axis && state.value) {
+          if (state.axis === 'week') show = el.dataset.week === state.value;
+          else if (state.axis === 'month') {
+            const w = el.dataset.week;
+            show = w && !!feed.querySelector('article.entry[data-week="' + w + '"][data-month="' + state.value + '"]');
+          }
+          else show = false;
         }
-        else show = false;
       }
       el.classList.toggle('filter-hidden', !show);
-      el.classList.toggle('search-hidden', searching);
+      el.classList.toggle('search-hidden', searching && weeklyAllowed);
+      // Count rollup wraps (not break dividers) so the "no matches" check
+      // reflects content, not decorations. Only count when dailies are
+      // hidden — otherwise they'd double-count alongside dailies.
+      if (show && !viewShows('daily') && el.classList.contains('week-rollup-wrap')) anyShown++;
+    });
+
+    // Monthly rollup blocks — visible if 'monthly' is in the set, or empty.
+    const monthlyAllowed = viewShows('monthly');
+    feed.querySelectorAll('.month-break, .month-rollup-wrap').forEach(el => {
+      let show = monthlyAllowed;
+      if (show) {
+        if (searching) show = false;
+        else if (state.axis && state.value) {
+          if (state.axis === 'month') show = el.dataset.month === state.value;
+          else if (state.axis === 'year') show = (el.dataset.month || '').slice(0, 4) === state.value;
+          else show = false;
+        }
+      }
+      el.classList.toggle('filter-hidden', !show);
+      el.classList.toggle('search-hidden', searching && monthlyAllowed);
+      if (show && !viewShows('daily') && !viewShows('weekly') && el.classList.contains('month-rollup-wrap')) anyShown++;
     });
 
     if (empty) empty.style.display = (state.value && !anyShown) ? '' : 'none';
@@ -866,6 +973,11 @@ FILTER_WIDGET = """
   }
   function syncUrl() {
     const parts = [];
+    // Only surface views in the URL if they differ from the default —
+    // keeps casual URLs short. `views=daily,weekly` reserved for shares.
+    const viewArr = [...state.views].sort();
+    const defArr = [...DEFAULT_VIEWS].sort();
+    if (viewArr.join(',') !== defArr.join(',')) parts.push('views=' + viewArr.join(','));
     if (state.axis) parts.push('axis=' + state.axis);
     if (state.value) parts.push('value=' + encodeURIComponent(state.value));
     const hash = parts.length ? '#' + parts.join('&') : '';
@@ -880,9 +992,14 @@ FILTER_WIDGET = """
       return [k, v ? decodeURIComponent(v) : ''];
     }));
     // Only adopt filter-related hashes; date anchors like #2026-04-12 are ignored here.
-    if (['project','week','month','mood','learning','search','year'].includes(params.axis)) {
+    if (['project','week','month','mood','learning','search','year','topic'].includes(params.axis)) {
       state.axis = params.axis;
       if (params.value) state.value = params.value;
+    }
+    if (params.views) {
+      const incoming = params.views.split(',').map(s => s.trim())
+        .filter(x => VIEW_KEYS.includes(x));
+      if (incoming.length) state.views = new Set(incoming);
     }
   }
   parseHash();
@@ -905,6 +1022,13 @@ REFRESH_WIDGET = """
     <div class="sched-row">
       <label>Time: <input id="sched-hour" type="number" min="0" max="23" style="width:52px"> :
         <input id="sched-min" type="number" min="0" max="59" style="width:52px"></label>
+    </div>
+    <div class="sched-row sched-auto-row">
+      <label><input id="sched-auto" type="checkbox">
+        Auto-refresh when new content is detected</label>
+      <p class="sched-hint">The page will quietly regenerate briefs/narrations in the
+        background whenever it notices new session data. Disable if you'd rather click
+        Refresh manually.</p>
     </div>
     <div class="sched-actions">
       <button id="sched-install" type="button" class="sched-primary">Install</button>
@@ -948,8 +1072,11 @@ REFRESH_WIDGET = """
   font-family: ui-monospace, Consolas, monospace; }
 .sched-state.installed { color: var(--ok); }
 .sched-row { margin: 14px 0; font-size: 13px; }
-.sched-row input { font: inherit; padding: 3px 6px; border: 1px solid var(--rule);
+.sched-row input[type="number"] { font: inherit; padding: 3px 6px; border: 1px solid var(--rule);
   border-radius: 4px; background: var(--bg); color: var(--fg); text-align: center; }
+.sched-auto-row label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.sched-auto-row input[type="checkbox"] { margin: 0; cursor: pointer; }
+.sched-hint { margin: 6px 0 0 22px; font-size: 11px; color: var(--muted); line-height: 1.45; }
 .sched-actions { display: flex; gap: 8px; margin-top: 16px; }
 .sched-primary { flex: 1; padding: 6px 12px; background: var(--accent);
   color: var(--paper); border: none; border-radius: 4px; cursor: pointer; font: inherit; }
@@ -965,6 +1092,12 @@ REFRESH_WIDGET = """
   const msg = document.getElementById('refresh-msg');
   const btn = document.getElementById('refresh-btn');
   let polling = false;
+  const AUTO_KEY = 'cj.autoRefresh';
+  // Default ON — unset key reads as enabled; only an explicit '0' disables.
+  const autoEnabled = () => localStorage.getItem(AUTO_KEY) !== '0';
+  // Poll the server every 60s so the page detects new content without a reload.
+  // When auto-refresh is on, detection triggers a pipeline run immediately.
+  const STATUS_POLL_MS = 60 * 1000;
   async function checkStatus() {
     // First: is a refresh already in flight from a prior page? Re-attach if so.
     try {
@@ -992,6 +1125,10 @@ REFRESH_WIDGET = """
         bar.classList.add('has-updates');
         msg.textContent = `${data.total_pending} update${data.total_pending===1?'':'s'} available`;
         btn.disabled = false; btn.textContent = 'Refresh now';
+        if (autoEnabled() && !polling) {
+          msg.textContent = `auto-refreshing (${data.total_pending} new)`;
+          startRefresh();
+        }
       } else {
         bar.classList.remove('has-updates');
         msg.textContent = 'up to date';
@@ -1037,7 +1174,10 @@ REFRESH_WIDGET = """
     tick();
   }
   btn.addEventListener('click', startRefresh);
-  if (location.protocol.startsWith('http')) checkStatus();
+  if (location.protocol.startsWith('http')) {
+    checkStatus();
+    setInterval(checkStatus, STATUS_POLL_MS);
+  }
 
   // --- Schedule modal ---
   const schBtn = document.getElementById('schedule-btn');
@@ -1049,6 +1189,17 @@ REFRESH_WIDGET = """
   const $un    = document.getElementById('sched-uninstall');
   const $close = document.getElementById('sched-close');
   const $raw   = document.getElementById('sched-raw');
+  const $auto  = document.getElementById('sched-auto');
+
+  // Reflect persisted preference (per-browser) whenever the modal opens
+  // and write back on toggle. Stored as '1' / '0' to keep the check trivial.
+  if ($auto) {
+    $auto.checked = autoEnabled();
+    $auto.addEventListener('change', () => {
+      localStorage.setItem(AUTO_KEY, $auto.checked ? '1' : '0');
+      if ($auto.checked) checkStatus();  // kick immediately if pending
+    });
+  }
 
   async function loadSchedule() {
     $state.textContent = 'Checking…';
@@ -1933,6 +2084,28 @@ def _pretty_date_year(iso: str) -> str:
         return ""
 
 
+def _fmt_generated_at(iso: str) -> str:
+    """Short, readable UTC-to-user-friendly form for a narration/brief
+    generated_at timestamp. Accepts the ISO form we persist ('%Y-%m-%dT%H:%M:%S[.ffffff][+00:00]')
+    and falls back to the raw string if parsing fails."""
+    if not iso:
+        return ""
+    raw = iso.strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z",
+                "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%dT%H:%M:%S.%f",
+                "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            # Stamps are stored in UTC (via datetime.now(timezone.utc) in
+            # brief/narrate). Render with the Y-M-D + short time so it's
+            # legible at a glance.
+            return dt.strftime("%Y-%m-%d %H:%M UTC")
+        except ValueError:
+            continue
+    return raw[:19]  # graceful degrade — first 19 chars of an ISO string
+
+
 def _count_meta(row: dict, mood: str = "") -> str:
     # Counts live only in the inspect chips at the bottom. The header
     # carries the mood only — tone without duplication.
@@ -1943,12 +2116,14 @@ def _count_meta(row: dict, mood: str = "") -> str:
 
 def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[dict],
                                  files: list[dict], briefs: list[dict] | None,
-                                 entry_id: str) -> str:
+                                 entry_id: str,
+                                 narration_generated_at: str = "") -> str:
     """Per-category inspect chips. Each chip toggles its own panel. Multiple
-    can be open at once. Order: briefs → prompts → moments → files."""
+    can be open at once. Order: briefs → prompts → moments → files → updated."""
     n_files = len(files); n_prompts = len(prompts); n_snips = len(snippets)
     n_briefs = len(briefs) if briefs else 0
-    if not (n_files or n_prompts or n_snips or n_briefs):
+    # Show "Updated" chip whenever the day has *any* content to timestamp.
+    if not (n_files or n_prompts or n_snips or n_briefs or narration_generated_at):
         return ""
 
     chips: list[str] = []
@@ -2026,6 +2201,33 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
         _add("files", f"{n_files} files", f"<ul class='files'>{items}</ul>",
              searchable=True, search_placeholder="filter files...")
 
+    # --- updated (narration + brief generation timestamps) ---
+    # One chip showing when this entry was last written. The panel lists the
+    # daily narration's timestamp plus each brief's own generated_at, so
+    # users can tell if an entry is stale relative to fresh briefs.
+    narration_line = ""
+    if narration_generated_at:
+        narration_line = (
+            f'<p><strong>Narration written:</strong> '
+            f'{esc(_fmt_generated_at(narration_generated_at))}</p>'
+        )
+    brief_rows = ""
+    if briefs:
+        rows = []
+        # Sort by project name to match the brief panel's order.
+        for b in sorted(briefs, key=lambda x: (x.get("_project_name") or "").lower()):
+            ts = _fmt_generated_at(b.get("_generated_at", ""))
+            if not ts:
+                continue
+            rows.append(
+                f'<li><code>{esc(b.get("_project_name","") or "")}</code> · {esc(ts)}</li>'
+            )
+        if rows:
+            brief_rows = "<p><strong>Briefs generated:</strong></p><ul>" + "".join(rows) + "</ul>"
+    if narration_line or brief_rows:
+        chip_label = _fmt_generated_at(narration_generated_at) if narration_generated_at else "timestamps"
+        _add("updated", f"Updated {chip_label}", narration_line + brief_rows)
+
     return (
         f'<div class="inspect-row">{"".join(chips)}</div>'
         f'{"".join(panels)}'
@@ -2070,7 +2272,8 @@ def render_day_entry(date: str, narration: str, mood: str,
                      month: str = "",
                      mood_label: str = "",
                      has_learning: bool = False,
-                     tags: list[str] | None = None) -> str:
+                     tags: list[str] | None = None,
+                     narration_generated_at: str = "") -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed."""
     pretty = _pretty_date_safe(date)
     meta = _count_meta(counts_row, mood)
@@ -2090,7 +2293,9 @@ def render_day_entry(date: str, narration: str, mood: str,
     else:
         body = '<div class="entry-empty">Nothing happened today.</div>'
 
-    activity = _render_activity_disclosure(counts_row, prompts, snippets, files, briefs, entry_id=date)
+    activity = _render_activity_disclosure(counts_row, prompts, snippets, files, briefs,
+                                           entry_id=date,
+                                           narration_generated_at=narration_generated_at)
 
     projects_attr = ",".join(projects_in_day or [])
     week_attr = _iso_week_of(date)
@@ -2175,6 +2380,7 @@ def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
     if has_any:
         filter_bar = (
             '<div class="filter-bar">'
+            '  <div class="filter-row filter-modes" id="filter-modes"></div>'
             '  <div class="filter-row filter-axes" id="filter-axes"></div>'
             '  <div class="filter-row filter-options" id="filter-options"></div>'
             '</div>'

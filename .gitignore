@@ -1,5 +1,6 @@
 # Per-machine Claude Code state that leaks in via cwd
 .claude/
+.harness/
 
 # Python
 __pycache__/
@@ -15,6 +16,8 @@ db/journal.sqlite-wal
 db/journal.sqlite-shm
 db/last_run.json
 db/serve.pid
+db/*.log
+db/journal.sqlite.pre-*-backup
 
 # Piper voice models (large binary, auto-downloaded on first audio run)
 db/piper_models/

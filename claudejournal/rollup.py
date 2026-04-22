@@ -5,6 +5,7 @@ diary-voiced daily entries; output is a week retrospective.
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import subprocess
 import json
@@ -12,6 +13,10 @@ from datetime import date as date_cls, datetime, timedelta
 
 from claudejournal.config import Config
 from claudejournal.db import connect
+
+# Bumping this invalidates every weekly rollup on next run. Keep in sync
+# with the ROLLUP_SYSTEM prompt below when its semantics change.
+ROLLUP_PROMPT_VERSION = "v1"
 
 
 ROLLUP_SYSTEM = """You are the user's journal, producing a short weekly retrospective in their first-person voice, built on top of their daily diary entries from the past week.
@@ -49,11 +54,27 @@ def weeks_with_activity(conn: sqlite3.Connection) -> list[str]:
 def _load_daily_for_week(conn: sqlite3.Connection, iso_week: str) -> list[dict]:
     start, end = _week_bounds(iso_week)
     rows = conn.execute(
-        """SELECT date, prose FROM narrations
+        """SELECT date, prose, input_hash FROM narrations
            WHERE scope='daily' AND date BETWEEN ? AND ? ORDER BY date""",
         (start, end),
     ).fetchall()
-    return [{"date": r["date"], "prose": r["prose"]} for r in rows]
+    return [{"date": r["date"], "prose": r["prose"],
+             "input_hash": r["input_hash"] or ""} for r in rows]
+
+
+def _weekly_input_hash(dailies: list[dict]) -> str:
+    """Stable hash over the daily narrations feeding this week.
+    Prefer the daily's input_hash (cascades from brief-level changes); fall
+    back to len(prose) for older rows that predate the hash column."""
+    h = hashlib.sha256()
+    h.update(ROLLUP_PROMPT_VERSION.encode())
+    for d in sorted(dailies, key=lambda x: x["date"]):
+        h.update(d["date"].encode())
+        h.update(b"\x00")
+        token = d.get("input_hash") or f"len:{len(d.get('prose') or '')}"
+        h.update(token.encode("utf-8", errors="replace"))
+        h.update(b"\x01")
+    return h.hexdigest()[:16]
 
 
 def _build_rollup_message(iso_week: str, dailies: list[dict]) -> str:
@@ -75,16 +96,19 @@ def narrate_week(conn: sqlite3.Connection, iso_week: str, *,
                  model: str = "sonnet", force: bool = False,
                  binary: str = "claude") -> dict | None:
     key = iso_week
-    if not force:
-        row = conn.execute(
-            "SELECT prose FROM narrations WHERE scope='weekly' AND key = ?", (key,)
-        ).fetchone()
-        if row:
-            return {"iso_week": iso_week, "skipped": True}
-
     dailies = _load_daily_for_week(conn, iso_week)
     if not dailies:
         return None
+    week_hash = _weekly_input_hash(dailies)
+
+    if not force:
+        row = conn.execute(
+            "SELECT prompt_version, input_hash FROM narrations WHERE scope='weekly' AND key = ?",
+            (key,),
+        ).fetchone()
+        if row and row["prompt_version"] == ROLLUP_PROMPT_VERSION and row["input_hash"] == week_hash:
+            return {"iso_week": iso_week, "skipped": True}
+
     user_msg = _build_rollup_message(iso_week, dailies)
 
     cmd = [
@@ -110,12 +134,15 @@ def narrate_week(conn: sqlite3.Connection, iso_week: str, *,
     start, _ = _week_bounds(iso_week)
     conn.execute(
         """INSERT INTO narrations (scope, key, date, project_id, prose,
-               prompt_version, generated_at, model)
-           VALUES ('weekly', ?, ?, NULL, ?, 'v1', ?, ?)
+               prompt_version, input_hash, generated_at, model)
+           VALUES ('weekly', ?, ?, NULL, ?, ?, ?, ?, ?)
            ON CONFLICT(scope, key) DO UPDATE SET
                prose=excluded.prose, date=excluded.date,
+               prompt_version=excluded.prompt_version,
+               input_hash=excluded.input_hash,
                generated_at=excluded.generated_at, model=excluded.model""",
-        (key, start, prose, datetime.now().isoformat(), model),
+        (key, start, prose, ROLLUP_PROMPT_VERSION, week_hash,
+         datetime.now().isoformat(), model),
     )
     conn.commit()
     return {"iso_week": iso_week, "chars": len(prose), "dailies": len(dailies)}

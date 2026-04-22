@@ -121,14 +121,16 @@ def _load_day_bundle(conn: sqlite3.Connection, date: str, pid: str | None = None
     """Everything needed to render one day entry: narration, counts, prompts, snippets, files, briefs."""
     if pid:
         nrow = conn.execute(
-            "SELECT prose FROM narrations WHERE scope='project_day' AND date=? AND project_id=?",
+            "SELECT prose, generated_at FROM narrations WHERE scope='project_day' AND date=? AND project_id=?",
             (date, pid),
         ).fetchone()
     else:
         nrow = conn.execute(
-            "SELECT prose FROM narrations WHERE scope='daily' AND date=?", (date,),
+            "SELECT prose, generated_at FROM narrations WHERE scope='daily' AND date=?",
+            (date,),
         ).fetchone()
     narration = nrow["prose"] if nrow else ""
+    narration_generated_at = nrow["generated_at"] if nrow else ""
 
     counts = _day_counts(conn, date, pid)
 
@@ -146,7 +148,7 @@ def _load_day_bundle(conn: sqlite3.Connection, date: str, pid: str | None = None
         SELECT path, touch_count, project_id FROM files_touched WHERE date = ?
     """
     briefs_sql = """
-        SELECT b.session_id, b.brief_json, p.display_name AS project_name
+        SELECT b.session_id, b.brief_json, b.generated_at, p.display_name AS project_name
         FROM session_briefs b JOIN projects p ON p.id = b.project_id
         WHERE b.date = ?
     """
@@ -176,6 +178,7 @@ def _load_day_bundle(conn: sqlite3.Connection, date: str, pid: str | None = None
             b = json.loads(br["brief_json"])
             b["_session_id"] = br["session_id"]
             b["_project_name"] = br["project_name"]
+            b["_generated_at"] = br["generated_at"] or ""
             briefs.append(b)
         except json.JSONDecodeError:
             continue
@@ -189,6 +192,7 @@ def _load_day_bundle(conn: sqlite3.Connection, date: str, pid: str | None = None
         "narration": narration, "counts": counts,
         "prompts": prompts, "snippets": snippets,
         "files": files, "briefs": briefs, "mood": mood,
+        "narration_generated_at": narration_generated_at,
     }
 
 
@@ -293,6 +297,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             mood_label=day_mood,
             has_learning=has_learn,
             tags=tags_by_date.get(date, []),
+            narration_generated_at=bundle.get("narration_generated_at", ""),
         ))
     if last_week and last_week in weekly:
         out.append(render_week_break(last_week, weekly[last_week], anchor_base))

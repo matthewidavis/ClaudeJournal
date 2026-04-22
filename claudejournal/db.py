@@ -71,18 +71,20 @@ CREATE INDEX IF NOT EXISTS idx_narr_date ON narrations(date);
 CREATE INDEX IF NOT EXISTS idx_narr_project_date ON narrations(project_id, date);
 
 CREATE TABLE IF NOT EXISTS session_briefs (
-    session_id TEXT PRIMARY KEY,
-    project_id TEXT,
+    session_id TEXT,
     date TEXT,
+    project_id TEXT,
     prompt_version TEXT,
     input_hash TEXT,
     brief_json TEXT,
     generated_at TEXT,
     cost_usd REAL,
-    model TEXT
+    model TEXT,
+    PRIMARY KEY (session_id, date)
 );
 CREATE INDEX IF NOT EXISTS idx_briefs_date ON session_briefs(date);
 CREATE INDEX IF NOT EXISTS idx_briefs_project_date ON session_briefs(project_id, date);
+CREATE INDEX IF NOT EXISTS idx_briefs_session ON session_briefs(session_id);
 
 CREATE TABLE IF NOT EXISTS assistant_snippets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,6 +121,48 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN has_main_transcript INTEGER DEFAULT 0")
     if not has_col("sessions", "subagent_count"):
         conn.execute("ALTER TABLE sessions ADD COLUMN subagent_count INTEGER DEFAULT 0")
+    if not has_col("narrations", "input_hash"):
+        conn.execute("ALTER TABLE narrations ADD COLUMN input_hash TEXT")
+
+    # Promote session_briefs PK from session_id to (session_id, date). This
+    # lets a long-running Claude session produce one brief per active day
+    # instead of one per session. Old rows are preserved verbatim — their
+    # original `date` field becomes the second half of the new composite
+    # key. Detection is via PRAGMA index_list: the old PK shows up as a
+    # sqlite_autoindex with a single column; the new one has two.
+    def _briefs_pk_is_composite() -> bool:
+        rows = list(conn.execute("PRAGMA table_info(session_briefs)"))
+        pk_cols = [r["name"] for r in rows if r["pk"]]
+        return len(pk_cols) == 2 and "session_id" in pk_cols and "date" in pk_cols
+    if not _briefs_pk_is_composite():
+        conn.executescript("""
+            CREATE TABLE session_briefs_new (
+                session_id TEXT,
+                date TEXT,
+                project_id TEXT,
+                prompt_version TEXT,
+                input_hash TEXT,
+                brief_json TEXT,
+                generated_at TEXT,
+                cost_usd REAL,
+                model TEXT,
+                PRIMARY KEY (session_id, date)
+            );
+            INSERT INTO session_briefs_new
+                (session_id, date, project_id, prompt_version, input_hash,
+                 brief_json, generated_at, cost_usd, model)
+            SELECT session_id, COALESCE(date, ''), project_id, prompt_version,
+                   input_hash, brief_json, generated_at, cost_usd, model
+            FROM session_briefs;
+            DROP TABLE session_briefs;
+            ALTER TABLE session_briefs_new RENAME TO session_briefs;
+            CREATE INDEX IF NOT EXISTS idx_briefs_date
+                ON session_briefs(date);
+            CREATE INDEX IF NOT EXISTS idx_briefs_project_date
+                ON session_briefs(project_id, date);
+            CREATE INDEX IF NOT EXISTS idx_briefs_session
+                ON session_briefs(session_id);
+        """)
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
