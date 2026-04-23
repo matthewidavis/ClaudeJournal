@@ -25,6 +25,10 @@ class Config:
     interlude_seeds: list[str] = field(default_factory=list)
     audio_enabled: bool = True
     audio_voice: str = "en_US-libritts-high"
+    # Explicit path to the `piper` executable. Leave None to auto-discover
+    # via PATH (shutil.which). Useful on Windows where `pip install piper-tts`
+    # drops piper.exe in a per-user Scripts dir that isn't on PATH by default.
+    piper_binary: str | None = None
 
 
 def default_claude_home() -> Path:
@@ -64,4 +68,5 @@ def load(config_path: Path | None = None) -> Config:
         interlude_seeds=data.get("interlude_seeds", []),
         audio_enabled=data.get("audio_enabled", True),
         audio_voice=data.get("audio_voice", "en_US-libritts-high"),
+        piper_binary=data.get("piper_binary"),
     )

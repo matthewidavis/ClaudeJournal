@@ -114,11 +114,10 @@ def run_all(cfg: Config, *,
     # the static site can play audio without secure-context APIs. Skipped
     # silently if piper CLI isn't installed.
     if getattr(cfg, "audio_enabled", True):
-        import shutil as _shutil
-        if _shutil.which("piper"):
+        from claudejournal import audio as audiomod
+        if audiomod.resolve_piper(cfg):
             if verbose: print("[6/6] audio")
             _tick("audio", 0, 1, "synthesizing")
-            from claudejournal import audio as audiomod
             try:
                 stats["audio"] = audiomod.generate_for_site(
                     cfg, out, voice=cfg.audio_voice, verbose=verbose
@@ -128,7 +127,7 @@ def run_all(cfg: Config, *,
                 if verbose: print(f"  audio stage failed: {exc}")
             _tick("audio", 1, 1, "done")
         else:
-            stats["audio"] = {"skipped": "piper CLI not installed (pip install piper-tts)"}
+            stats["audio"] = {"skipped": "piper not found (pip install piper-tts or set config.piper_binary)"}
 
     t1 = datetime.now(timezone.utc)
     stats["finished_at"] = t1.isoformat()

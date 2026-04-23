@@ -66,14 +66,49 @@ def ensure_model(voice: str, models_dir: Path) -> Path:
     return onnx
 
 
-def synthesize(text: str, out_wav: Path, model_path: Path) -> None:
+def resolve_piper(cfg=None) -> str | None:
+    """Find the piper executable. Config wins (full path supported), then
+    PATH lookup, then a handful of known Windows install locations for the
+    `pip install piper-tts` case where Scripts/ isn't on PATH."""
+    explicit = getattr(cfg, "piper_binary", None) if cfg else None
+    if explicit:
+        p = Path(explicit)
+        if p.exists():
+            return str(p)
+        # Bare name like "piper.exe" — let shutil.which handle it.
+        return shutil.which(explicit)
+    which = shutil.which("piper") or shutil.which("piper.exe")
+    if which:
+        return which
+    # Last-resort probe: pip installs piper-tts into per-user Scripts dirs
+    # that aren't on PATH by default on Windows. Matches the common layouts.
+    import os, sys, site
+    candidates: list[Path] = []
+    for base in [sys.prefix, sys.base_prefix, *(site.getsitepackages() or []),
+                 site.getusersitepackages()]:
+        if not base:
+            continue
+        bp = Path(base)
+        candidates.append(bp / "Scripts" / "piper.exe")
+        # Windows Store python layout: .../site-packages next to .../Scripts.
+        candidates.append(bp.parent / "Scripts" / "piper.exe")
+    for c in candidates:
+        try:
+            if c.exists():
+                return str(c)
+        except OSError:
+            continue
+    return None
+
+
+def synthesize(text: str, out_wav: Path, model_path: Path, piper_bin: str = "piper") -> None:
     """Shell out to piper CLI. Writes atomically: synth to a sibling .new.wav
     then rename — so an existing old WAV stays serveable until the new one
     is ready (important when re-rendering in a different voice)."""
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_wav.with_suffix(".new.wav")
     proc = subprocess.run(
-        ["piper", "--model", str(model_path), "--output_file", str(tmp)],
+        [piper_bin, "--model", str(model_path), "--output_file", str(tmp)],
         input=text.encode("utf-8"),
         capture_output=True,
     )
@@ -108,9 +143,11 @@ def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
     """
     from claudejournal.db import connect
 
-    if shutil.which("piper") is None:
+    piper_bin = resolve_piper(cfg)
+    if piper_bin is None:
         raise RuntimeError(
-            "piper CLI not found on PATH. Install with: pip install piper-tts"
+            "piper CLI not found. Install with: pip install piper-tts, "
+            "or set config.piper_binary to the full path."
         )
 
     audio_dir = out_dir / "audio"
@@ -158,7 +195,7 @@ def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
         if verbose:
             print(f"  {kind:<7} {base}  ({len(text)} chars)")
         try:
-            synthesize(text, wav, model_path)
+            synthesize(text, wav, model_path, piper_bin=piper_bin)
             manifest[base] = h
             n_made += 1
         except Exception as exc:
