@@ -43,6 +43,7 @@ class NarrationInput:
     prior_entry: str = ""                          # yesterday's narration for continuity
     threads: list[dict] = field(default_factory=list)     # deterministic — see threads.py
     anchors: list[dict] = field(default_factory=list)     # allowed [YYYY-MM-DD] citations
+    docs_added: list[dict] = field(default_factory=list)  # docs added on this date (title, note, summary)
 
 
 @dataclass

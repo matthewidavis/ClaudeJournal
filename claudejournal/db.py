@@ -105,6 +105,27 @@ CREATE TABLE IF NOT EXISTS files_touched (
     touch_count INTEGER DEFAULT 0,
     PRIMARY KEY (project_id, date, path)
 );
+
+-- Curated external documents the user has added to the journal. Each doc
+-- produces a summary narration (stored under narrations.scope='document',
+-- key=doc id). The daily narration for `added_date` folds in a compact
+-- reference to any docs added that day, so reading becomes a real event
+-- in the chronological spine without breaking the memoir voice.
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,            -- short stable id (see docs.new_id)
+    title TEXT,                     -- display title (user-supplied or filename)
+    path TEXT,                      -- absolute path to stored copy under db/docs/
+    original_filename TEXT,         -- what it was called when added
+    ext TEXT,                       -- normalized lowercase extension ('.pdf', '.md', …)
+    content_hash TEXT,              -- sha256 of extracted text
+    extracted_text TEXT,            -- full extracted text (nullable if extraction failed)
+    user_note TEXT,                 -- why the user added it — used verbatim by the narrator
+    project_ids TEXT,               -- JSON array of project_id strings
+    tags TEXT,                      -- JSON array of lowercase tag strings
+    added_at TEXT,                  -- ISO UTC timestamp of `doc add`
+    added_date TEXT                 -- YYYY-MM-DD of added_at (the cascade anchor)
+);
+CREATE INDEX IF NOT EXISTS idx_documents_added_date ON documents(added_date);
 """
 
 

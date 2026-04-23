@@ -84,7 +84,9 @@ Rules you MUST follow:
 Output ONLY valid JSON matching the supplied schema. No prose, no markdown, no backticks."""
 
 PROMPT_VERSION = "v2"
-NARRATION_PROMPT_VERSION = "v3"
+# v4 bumps the shape of the narration prompt to include a DOCUMENTS ADDED
+# TODAY block. Narrations written under v3 will regenerate on first run.
+NARRATION_PROMPT_VERSION = "v4"
 
 
 NARRATION_SYSTEM = """You are ghostwriting a personal journal entry in the user's first-person voice, based on structured summaries of their day's work sessions.
@@ -126,6 +128,13 @@ Core rules — these are non-negotiable:
     - A "thread" is a project you've been working on across multiple days. Threads are supplied below with their span and status (active/stuck/resolved).
     - When writing about a thread, honor its trajectory. A resolved thread should feel like closure. A stuck thread should feel like you're still in it.
     - Do NOT invent threads. If no threads are listed, every project in today's entry is fresh work — frame it that way.
+
+13. DOCUMENTS ADDED TODAY — reading as part of the day:
+    - A "document added today" is external reading material the user logged on this date (paper, article, notes). You're given the title, the user's note on why they added it, and a short takeaway from the document.
+    - Mention them naturally in first-person reading voice — "picked up X today", "added the Burgers paper to the shelf", "skimmed Y and kept thinking about Z". Woven into the prose, not listed.
+    - If the user's note connects the document to work they did that day, honor that connection in the prose. If their note doesn't name a connection, DO NOT invent one — mention the act of reading without manufacturing a link to the work.
+    - Keep doc mentions proportional: one or two sentences per document in the daily entry. The day's work is still the hero; reading is context, not the main event.
+    - If no documents were added, omit this dimension entirely. Don't say "I didn't read anything today."
 
 Output: prose only. No preamble, no markdown headings for the day itself, no trailing notes. Start with the first sentence of the entry."""
 
@@ -184,6 +193,23 @@ def _build_narration_message(inp: NarrationInput) -> str:
             )
             if t.get("goal_hint"):
                 lines.append(f"    started with: {t['goal_hint']}")
+        lines.append("")
+
+    if inp.docs_added:
+        lines.append("DOCUMENTS ADDED TODAY (external reading — mention in prose per rule 13):")
+        for d in inp.docs_added:
+            title = d.get("title") or d.get("id", "document")
+            note = d.get("user_note", "").strip()
+            summary = d.get("summary") or {}
+            hook = (summary.get("hook") or "").strip()
+            takeaway = (summary.get("takeaway") or "").strip()
+            lines.append(f"  - {title}")
+            if note:
+                lines.append(f"      user note: {note}")
+            if hook:
+                lines.append(f"      hook: {hook}")
+            if takeaway:
+                lines.append(f"      takeaway: {takeaway}")
         lines.append("")
 
     if inp.anchors:

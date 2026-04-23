@@ -48,21 +48,30 @@ def check(cfg: Config) -> dict:
 
         # 3. Dates whose daily narration is either missing or stale
         #    (prompt_version bumped, or input_hash no longer matches the set
-        #    of briefs for that day). Mirrors the logic in narrate.py.
+        #    of briefs + docs for that day). Mirrors the logic in narrate.py.
         from claudejournal.narrate import _narration_input_hash, _load_briefs_for_day
-        daily_dates = [
+        from claudejournal.docs import docs_added_on
+        # Consider every date with briefs OR with docs — a day may have no
+        # briefs (short sessions only) but still have a document added,
+        # which is enough to warrant a daily narration.
+        daily_dates = sorted({
             r["date"] for r in conn.execute(
-                "SELECT DISTINCT date FROM session_briefs WHERE date != '' ORDER BY date"
+                "SELECT DISTINCT date FROM session_briefs WHERE date != ''"
             ).fetchall()
-        ]
+        } | {
+            r["added_date"] for r in conn.execute(
+                "SELECT DISTINCT added_date FROM documents WHERE added_date != ''"
+            ).fetchall()
+        })
         daily_pending: list[str] = []
         proj_day_pending: list[tuple[str, str]] = []
         for d in daily_dates:
             briefs = _load_briefs_for_day(conn, d)
-            if not briefs:
+            docs_for_day = docs_added_on(conn, d)
+            if not briefs and not docs_for_day:
                 continue
             # Daily
-            day_hash = _narration_input_hash(briefs, "daily")
+            day_hash = _narration_input_hash(briefs, "daily", docs=docs_for_day)
             row = conn.execute(
                 "SELECT prompt_version, input_hash FROM narrations WHERE scope='daily' AND key=?",
                 (d,),
@@ -74,7 +83,8 @@ def check(cfg: Config) -> dict:
             for b in briefs:
                 by_pid.setdefault(b["_project_id"], []).append(b)
             for pid, pbriefs in by_pid.items():
-                phash = _narration_input_hash(pbriefs, "project_day", pid)
+                docs_for_proj = docs_added_on(conn, d, project_id=pid)
+                phash = _narration_input_hash(pbriefs, "project_day", pid, docs=docs_for_proj)
                 prow = conn.execute(
                     """SELECT prompt_version, input_hash FROM narrations
                        WHERE scope='project_day' AND key=?""",

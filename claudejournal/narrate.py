@@ -13,6 +13,7 @@ from claudejournal.narrator.base import NarrationInput
 from claudejournal.narrator.claude_code import NARRATION_PROMPT_VERSION
 from claudejournal.mood import lexical_signals
 from claudejournal.threads import available_anchors, compute_threads
+from claudejournal.docs import docs_added_on, docs_summary_hash_contribution
 
 
 def _load_briefs_for_day(conn: sqlite3.Connection, date: str,
@@ -45,10 +46,13 @@ def _load_briefs_for_day(conn: sqlite3.Connection, date: str,
 
 
 def _narration_input_hash(briefs: list[dict], scope: str,
-                          project_id: str | None = None) -> str:
-    """Stable hash over the briefs that feed a narration. Changes when a new
-    brief lands for the day, or when an existing brief's input_hash shifts
-    (session grew / user edited prompts). Cascades invalidation up from briefs."""
+                          project_id: str | None = None,
+                          docs: list[dict] | None = None) -> str:
+    """Stable hash over the briefs + docs that feed a narration. Changes
+    when a new brief lands for the day, when an existing brief's
+    input_hash shifts (session grew / user edited prompts), or when a
+    document is added/updated/removed on this date. Cascades invalidation
+    up from briefs and docs alike."""
     h = hashlib.sha256()
     h.update(NARRATION_PROMPT_VERSION.encode())
     h.update(scope.encode())
@@ -63,6 +67,9 @@ def _narration_input_hash(briefs: list[dict], scope: str,
         h.update(b"\x00")
         h.update(bh.encode("utf-8", errors="replace"))
         h.update(b"\x01")
+    if docs:
+        h.update(b"\x02docs\x02")
+        h.update(docs_summary_hash_contribution(docs))
     return h.hexdigest()[:16]
 
 
@@ -164,7 +171,8 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                 if progress:
                     try: progress(done, total, f"daily {d}")
                     except Exception: pass
-                day_hash = _narration_input_hash(all_briefs, "daily")
+                docs_for_day = docs_added_on(conn, d)
+                day_hash = _narration_input_hash(all_briefs, "daily", docs=docs_for_day)
                 if not force and _already_current(conn, "daily", key, day_hash):
                     stats["skipped"] += 1
                     if verbose:
@@ -178,6 +186,7 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                         date=d, scope="daily",
                         briefs=all_briefs, prior_entry=prior,
                         threads=threads, anchors=anchors,
+                        docs_added=docs_for_day,
                     )
                     if verbose:
                         pnames = sorted({b["_project_name"] for b in all_briefs})
@@ -207,7 +216,9 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                     if progress:
                         try: progress(done, total, f"{pname} · {d}")
                         except Exception: pass
-                    proj_hash = _narration_input_hash(pbriefs, "project_day", pid)
+                    docs_for_proj = docs_added_on(conn, d, project_id=pid)
+                    proj_hash = _narration_input_hash(pbriefs, "project_day", pid,
+                                                      docs=docs_for_proj)
                     if not force and _already_current(conn, "project_day", key, proj_hash):
                         stats["skipped"] += 1
                         continue
@@ -220,6 +231,7 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                         project_name=pname, project_id=pid,
                         briefs=pbriefs, prior_entry=prior,
                         threads=threads, anchors=anchors,
+                        docs_added=docs_for_proj,
                     )
                     if verbose:
                         print(f"  proj  {d}  {pname}  [{len(pbriefs)} briefs]")

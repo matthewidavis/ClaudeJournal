@@ -3,7 +3,12 @@ name = "claudejournal"
 version = "0.1.0"
 description = "Turns local Claude Code logs into a human-voiced diary"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    # PDF text extraction for the document curation feature. Pure-Python,
+    # no external binary deps, good enough for modern PDFs. Other doc
+    # types (md, txt, html) are handled via stdlib.
+    "pypdf>=5.0",
+]
 
 [project.scripts]
 claudejournal = "claudejournal.cli:main"

@@ -121,6 +121,53 @@ def reindex(conn: sqlite3.Connection, claude_home: Path, verbose: bool = False) 
         )
         stats["briefs"] += 1
 
+    # Curated documents — summary + head of extracted text. The summary
+    # is stored as JSON under narrations.scope='document'; we flatten the
+    # fields the same way briefs are flattened so retrieval hits them.
+    stats["documents"] = 0
+    for r in conn.execute(
+        """SELECT d.id, d.title, d.added_date, d.project_ids, d.tags,
+                  d.user_note, d.extracted_text,
+                  n.prose AS summary_json
+           FROM documents d
+           LEFT JOIN narrations n
+             ON n.scope='document' AND n.key=d.id"""
+    ).fetchall():
+        body_parts: list[str] = []
+        title = r["title"] or r["id"]
+        note = r["user_note"] or ""
+        if note:
+            body_parts.append(f"note: {note}")
+        try:
+            summary = json.loads(r["summary_json"]) if r["summary_json"] else {}
+        except json.JSONDecodeError:
+            summary = {}
+        if summary.get("hook"):
+            body_parts.append(f"hook: {summary['hook']}")
+        if summary.get("takeaway"):
+            body_parts.append(f"takeaway: {summary['takeaway']}")
+        if summary.get("key_points"):
+            body_parts.append("key_points:\n" + "\n".join(
+                f"- {p}" for p in summary["key_points"] if isinstance(p, str)
+            ))
+        # First 2 KB of extracted text gives FTS something to grep beyond
+        # the summary — cheap recall win without bloating the index.
+        excerpt = (r["extracted_text"] or "")[:2000]
+        if excerpt:
+            body_parts.append("excerpt:\n" + excerpt)
+        try:
+            pids = json.loads(r["project_ids"] or "[]")
+        except json.JSONDecodeError:
+            pids = []
+        primary_pid = pids[0] if pids else ""
+        conn.execute(
+            "INSERT INTO rag_chunks (kind, date, project_id, project_name, title, body) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("document", r["added_date"] or "", primary_pid, "",
+             f"doc · {title}", "\n\n".join(body_parts)),
+        )
+        stats["documents"] += 1
+
     # Project memory files
     for r in conn.execute(
         "SELECT id, display_name FROM projects"

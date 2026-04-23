@@ -57,6 +57,39 @@ def run_all(cfg: Config, *,
         progress=lambda d, t, l="": _tick("brief", d, t, l),
     )
 
+    # Documents get their own summarization stage. Idempotent — the
+    # summary input hash includes DOC_PROMPT_VERSION + title + note +
+    # extracted text, so existing docs regenerate only when something
+    # genuinely changes. New docs added via `claudejournal doc add` run
+    # their own summarize immediately, so this stage is a safety net for
+    # prompt-version bumps and force-refreshes.
+    if verbose: print("[2b] doc-summaries")
+    _tick("doc_summary", 0, 1, "starting")
+    from claudejournal import docs as docsmod
+    from claudejournal.db import connect as _connect
+    doc_stats = {"generated": 0, "skipped": 0, "errors": 0}
+    _conn = _connect(cfg.db_path)
+    try:
+        doc_ids = [r["id"] for r in _conn.execute(
+            "SELECT id FROM documents ORDER BY added_at"
+        ).fetchall()]
+        total_docs = len(doc_ids)
+        for idx, did in enumerate(doc_ids, 1):
+            _tick("doc_summary", idx, max(total_docs, 1), did)
+            try:
+                s = docsmod.summarize_document(
+                    _conn, did, model=cfg.brief_model, force=force, verbose=verbose,
+                )
+                doc_stats["generated"] += s.get("generated", 0)
+                doc_stats["skipped"] += s.get("skipped", 0)
+            except Exception as exc:
+                doc_stats["errors"] += 1
+                if verbose: print(f"  ! doc {did}: {exc}")
+    finally:
+        _conn.close()
+    stats["doc_summary"] = doc_stats
+    _tick("doc_summary", 1, 1, "done")
+
     if not skip_narration:
         if verbose: print("[3/5] narrate")
         _tick("narrate", 0, 1, "starting")

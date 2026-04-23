@@ -110,6 +110,28 @@ def main(argv: list[str] | None = None) -> int:
     p_ask.add_argument("--model", default="sonnet")
     p_ask.add_argument("--k", type=int, default=8, help="Retrieval breadth")
 
+    p_doc = sub.add_parser("doc", help="Manage curated external documents")
+    doc_sub = p_doc.add_subparsers(dest="doc_cmd", required=True)
+
+    p_doc_add = doc_sub.add_parser("add", help="Ingest a file into the library")
+    p_doc_add.add_argument("path", type=Path, help="File to add (.pdf .md .txt .html)")
+    p_doc_add.add_argument("--title", default=None,
+                           help="Display title (default: filename stem)")
+    p_doc_add.add_argument("--project", action="append", default=[],
+                           help="Attach to project (display name or id). Repeat for multiple.")
+    p_doc_add.add_argument("--tag", action="append", default=[],
+                           help="Tag (lowercase). Repeat for multiple.")
+    p_doc_add.add_argument("--note", default="",
+                           help="Why you're adding it. Used verbatim by the narrator.")
+    p_doc_add.add_argument("--model", default="haiku",
+                           help="Claude model for the summary (default: haiku)")
+
+    p_doc_list = doc_sub.add_parser("list", help="Show all documents in the library")
+    p_doc_list.add_argument("--json", action="store_true")
+
+    p_doc_rm = doc_sub.add_parser("remove", help="Hard-delete a document (cascade regenerates narrations)")
+    p_doc_rm.add_argument("id", help="Document id (first 10 hex chars from `doc list`)")
+
     args = parser.parse_args(argv)
     cfg = cfgmod.load(args.config)
 
@@ -516,6 +538,51 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{len(result.hits)} sources: " +
                   ", ".join(f"{h.kind}@{h.date or '-'}" for h in result.hits) + "]")
         return 0
+
+    if args.cmd == "doc":
+        from claudejournal import docs as docsmod
+        import json as _json
+        if args.doc_cmd == "add":
+            try:
+                result = docsmod.add_document(
+                    cfg, args.path,
+                    title=args.title,
+                    projects=args.project,
+                    tags=args.tag,
+                    note=args.note,
+                    model=args.model,
+                    verbose=True,
+                )
+            except (FileNotFoundError, ValueError, RuntimeError) as exc:
+                print(f"error: {exc}")
+                return 1
+            # Extra line so the two-stage output (add + summarize) lands cleanly.
+            print(f"done: {result['id']}  summary={result['summary']}")
+            return 0
+        if args.doc_cmd == "list":
+            items = docsmod.list_documents(cfg)
+            if args.json:
+                print(_json.dumps(items, indent=2))
+                return 0
+            if not items:
+                print("(no documents yet — add one with `claudejournal doc add <file>`)")
+                return 0
+            # Fixed-width columns keep the list scannable at a glance.
+            for it in items:
+                projs = ",".join(it["projects"]) or "-"
+                tags = ",".join(it["tags"]) or "-"
+                print(f"  {it['id']}  {it['added_date']}  "
+                      f"{(it['title'] or '')[:40]:40s}  "
+                      f"projects={projs}  tags={tags}  ({it['chars']:,}c)")
+            return 0
+        if args.doc_cmd == "remove":
+            try:
+                docsmod.remove_document(cfg, args.id, verbose=True)
+            except ValueError as exc:
+                print(f"error: {exc}")
+                return 1
+            return 0
+        return 1
 
     if args.cmd == "stop":
         import os, signal

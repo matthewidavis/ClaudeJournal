@@ -22,6 +22,9 @@ db/journal.sqlite.pre-*-backup
 # Piper voice models (large binary, auto-downloaded on first audio run)
 db/piper_models/
 
+# Curated external documents — user-added, machine-specific
+db/docs/
+
 # Rendered static site (re-built from DB)
 out/
 
