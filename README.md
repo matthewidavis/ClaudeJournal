@@ -128,6 +128,10 @@ Every layer content-hashes its inputs and cascades: a new brief on April 22 inva
 - Optional: `piper-tts` for audio narration
 - Optional: `sqlite-vec` + `sentence-transformers` for richer RAG
 
+## Design notes
+
+See [`docs/`](docs/) for longer-form design discussions — in particular [`docs/design/document-curation.md`](docs/design/document-curation.md) for the deferred design on bringing external documents into the journal as a fifth narration scope.
+
 ## License
 
 [MIT](LICENSE) — fork it, run it, change it, share it. If it gives you a useful diary, that's enough.
