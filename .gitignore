@@ -1,6 +1,7 @@
 # Per-machine Claude Code state that leaks in via cwd
 .claude/
 .harness/
+.playwright-mcp/
 
 # Python
 __pycache__/

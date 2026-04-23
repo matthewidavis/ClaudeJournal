@@ -5,6 +5,8 @@ Layout:
   out/projects/<name>/index.html              — same feed scoped to one project
   out/projects/<name>/<YYYY-MM-DD>.html       — single project-day deep link
   out/weekly/<ISO-week>.html                  — weekly retrospective standalone
+  out/monthly/<YYYY-MM>.html                  — monthly retrospective standalone
+  out/docs/<id>.html                          — curated document summary + excerpt
   out/chat.html                               — chat deep-link (floating bubble is primary)
   out/daily/<YYYY-MM-DD>.html                 — compat redirect to index.html#date
 """
@@ -22,6 +24,8 @@ from claudejournal.templates import (
     layout,
     render_chat_page,
     render_day_entry,
+    render_doc_feed_entry,
+    render_document_page,
     render_feed,
     render_month_break,
     render_week_break,
@@ -259,12 +263,71 @@ def _monthly_rollups(conn: sqlite3.Connection) -> dict[str, str]:
     }
 
 
+def _docs_by_date(conn: sqlite3.Connection,
+                  pid: str | None = None) -> dict[str, list[dict]]:
+    """Group documents (with their summary) by added_date. When `pid` is
+    supplied, restrict to docs attached to that project."""
+    rows = conn.execute(
+        """SELECT d.id, d.title, d.original_filename, d.ext, d.user_note,
+                  d.project_ids, d.tags, d.added_date, d.extracted_text,
+                  n.prose AS summary_json
+           FROM documents d
+           LEFT JOIN narrations n
+             ON n.scope='document' AND n.key=d.id
+           ORDER BY d.added_date DESC, d.added_at DESC"""
+    ).fetchall()
+    # Resolve project ids to display names once — same lookup a few
+    # callers need; worth passing through a small map.
+    proj_names = {
+        r["id"]: r["display_name"]
+        for r in conn.execute("SELECT id, display_name FROM projects").fetchall()
+    }
+    grouped: dict[str, list[dict]] = {}
+    for r in rows:
+        try:
+            pids = json.loads(r["project_ids"] or "[]")
+        except json.JSONDecodeError:
+            pids = []
+        if pid is not None and pid not in pids:
+            continue
+        try:
+            tags = json.loads(r["tags"] or "[]")
+        except json.JSONDecodeError:
+            tags = []
+        try:
+            summary = json.loads(r["summary_json"]) if r["summary_json"] else {}
+        except json.JSONDecodeError:
+            summary = {}
+        doc = {
+            "id": r["id"],
+            "title": r["title"],
+            "original_filename": r["original_filename"],
+            "ext": r["ext"],
+            "user_note": r["user_note"] or "",
+            "added_date": r["added_date"],
+            "extracted_text": r["extracted_text"] or "",
+            "_project_names": [proj_names.get(p, p) for p in pids if p],
+            "_tags_list": tags,
+            "_summary": summary,
+        }
+        grouped.setdefault(r["added_date"] or "", []).append(doc)
+    return grouped
+
+
 def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: str,
                        pid: str | None = None,
                        tags_by_date: dict[str, list[str]] | None = None) -> list[str]:
     """Produce the feed entries + week/month breaks interleaved, newest first."""
     weekly = _weekly_rollups(conn)
     monthly = _monthly_rollups(conn)
+    docs_by_date = _docs_by_date(conn, pid=pid)
+    # Flat list of (title, id) pairs used to linkify narration prose
+    # wherever the narrator mentioned a doc by its exact title.
+    known_docs: list[tuple[str, str]] = [
+        (doc["title"] or doc.get("original_filename") or doc["id"], doc["id"])
+        for doc_list in docs_by_date.values()
+        for doc in doc_list
+    ]
     tags_by_date = tags_by_date or {}
     out: list[str] = []
     last_week: str | None = None
@@ -274,12 +337,14 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
         month = _month_of(date)
         # Week break when week changes
         if week != last_week and last_week is not None:
-            out.append(render_week_break(last_week, weekly.get(last_week, ""), anchor_base))
+            out.append(render_week_break(last_week, weekly.get(last_week, ""),
+                                         anchor_base, known_docs=known_docs))
         # Month break AFTER the week break (month is the bigger boundary —
         # visually it sits below the week break, so appears after in DOM order
         # given newest-first iteration).
         if month != last_month and last_month is not None:
-            out.append(render_month_break(last_month, monthly.get(last_month, ""), anchor_base))
+            out.append(render_month_break(last_month, monthly.get(last_month, ""),
+                                          anchor_base, known_docs=known_docs))
         last_week = week
         last_month = month
         bundle = _load_day_bundle(conn, date, pid)
@@ -298,11 +363,30 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             has_learning=has_learn,
             tags=tags_by_date.get(date, []),
             narration_generated_at=bundle.get("narration_generated_at", ""),
+            docs_added=docs_by_date.get(date, []),
+            known_docs=known_docs,
         ))
+        # Doc entries for this date — emitted right after the day so they
+        # cluster chronologically. The Library view chip keeps them visible
+        # independently of Daily/Weekly/Monthly toggles.
+        for doc in docs_by_date.get(date, []):
+            out.append(render_doc_feed_entry(doc, doc.get("_summary") or {},
+                                             anchor_base=anchor_base))
+    # Also emit docs for dates that had no briefs (e.g., a quiet reading day
+    # with no sessions) — those dates won't appear in the main `dates` list
+    # but their docs still deserve a home in the feed.
+    date_set = set(dates)
+    for d, doc_list in docs_by_date.items():
+        if d and d not in date_set:
+            for doc in doc_list:
+                out.append(render_doc_feed_entry(doc, doc.get("_summary") or {},
+                                                 anchor_base=anchor_base))
     if last_week and last_week in weekly:
-        out.append(render_week_break(last_week, weekly[last_week], anchor_base))
+        out.append(render_week_break(last_week, weekly[last_week], anchor_base,
+                                     known_docs=known_docs))
     if last_month and last_month in monthly:
-        out.append(render_month_break(last_month, monthly[last_month], anchor_base))
+        out.append(render_month_break(last_month, monthly[last_month], anchor_base,
+                                      known_docs=known_docs))
     return out
 
 
@@ -312,10 +396,19 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     (out_dir / "projects").mkdir(exist_ok=True)
     (out_dir / "weekly").mkdir(exist_ok=True)
     (out_dir / "monthly").mkdir(exist_ok=True)
+    (out_dir / "docs").mkdir(exist_ok=True)
 
     conn = connect(db_path)
     stats = {"index": 0, "project_index": 0, "project_day": 0, "weekly": 0,
-             "monthly": 0, "daily_redirect": 0}
+             "monthly": 0, "daily_redirect": 0, "docs": 0}
+    # Global list of (title, id) pairs — used by every renderer that calls
+    # link_doc_titles on narration prose. Cheaper than per-call queries.
+    known_docs_all: list[tuple[str, str]] = [
+        (r["title"] or r["original_filename"] or r["id"], r["id"])
+        for r in conn.execute(
+            "SELECT id, title, original_filename FROM documents"
+        ).fetchall()
+    ]
 
     # ---------- Home feed ----------
     dates = _active_dates(conn)
@@ -417,7 +510,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     ).fetchall()
     for wr in weekly_rows:
         iso_week, start, prose = wr["key"], wr["date"], wr["prose"]
-        body_html = render_week_break(iso_week, prose, anchor_base="../")
+        body_html = render_week_break(iso_week, prose, anchor_base="../",
+                                      known_docs=known_docs_all)
         body = (
             f'<header class="site-head">'
             f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
@@ -440,7 +534,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             pretty = datetime.strptime(ym, "%Y-%m").strftime("%B %Y")
         except ValueError:
             pretty = ym
-        body_html = render_month_break(ym, prose, anchor_base="../")
+        body_html = render_month_break(ym, prose, anchor_base="../",
+                                       known_docs=known_docs_all)
         body = (
             f'<header class="site-head">'
             f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
@@ -452,6 +547,64 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             layout(pretty, body, anchor_base="../"), encoding="utf-8"
         )
         stats["monthly"] += 1
+
+    # ---------- Per-document summary pages ----------
+    # Join documents to their narration row (scope='document') so the page
+    # has the summary JSON to render. Orphan docs (no summary yet) still
+    # get a page so the link from the list isn't a 404 — they just show a
+    # placeholder until the pipeline catches up.
+    doc_rows = conn.execute(
+        """SELECT d.id, d.title, d.original_filename, d.ext, d.user_note,
+                  d.project_ids, d.tags, d.added_date, d.extracted_text,
+                  n.prose AS summary_json
+           FROM documents d
+           LEFT JOIN narrations n
+             ON n.scope='document' AND n.key = d.id
+           ORDER BY d.added_date DESC, d.added_at DESC"""
+    ).fetchall()
+    # Resolve project ids → display names for the meta line. One query up
+    # front is cheaper than one per doc.
+    proj_name_map = {
+        r["id"]: r["display_name"]
+        for r in conn.execute("SELECT id, display_name FROM projects").fetchall()
+    }
+    for dr in doc_rows:
+        try:
+            pids = json.loads(dr["project_ids"] or "[]")
+        except json.JSONDecodeError:
+            pids = []
+        try:
+            tags = json.loads(dr["tags"] or "[]")
+        except json.JSONDecodeError:
+            tags = []
+        try:
+            summary = json.loads(dr["summary_json"]) if dr["summary_json"] else {}
+        except json.JSONDecodeError:
+            summary = {}
+        doc = {
+            "id": dr["id"],
+            "title": dr["title"],
+            "original_filename": dr["original_filename"],
+            "ext": dr["ext"],
+            "user_note": dr["user_note"] or "",
+            "added_date": dr["added_date"],
+            "extracted_text": dr["extracted_text"] or "",
+            "_project_names": [proj_name_map.get(p, p) for p in pids if p],
+            "_tags_list": tags,
+        }
+        pretty_title = doc["title"] or doc["original_filename"] or doc["id"]
+        body_html = render_document_page(doc, summary, anchor_base="../")
+        # Standalone page: just a back crumb + the doc article. The
+        # article carries its own title, so no redundant <h1>.
+        body = (
+            f'<header class="site-head">'
+            f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
+            f'</header>{body_html}<footer>claudejournal</footer>'
+        )
+        (out_dir / "docs" / f"{dr['id']}.html").write_text(
+            layout(pretty_title, body, anchor_base="../"), encoding="utf-8"
+        )
+        stats["docs"] += 1
 
     # ---------- Chat deep-link page (main chat is the floating bubble) ----------
     (out_dir / "chat.html").write_text(

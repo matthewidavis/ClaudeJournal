@@ -80,6 +80,56 @@ def link_anchors(prose: str, base_path: str = "./") -> str:
     return _ANCHOR_RX.sub(_sub, escaped)
 
 
+def link_doc_titles(html_text: str, doc_titles: list[tuple[str, str]],
+                    base_path: str = "./") -> str:
+    """Wrap each known document title with a link to its per-doc page.
+
+    `doc_titles` is a list of (title, doc_id) pairs. Input must already be
+    HTML-escaped (this function runs AFTER link_anchors()) — we compare
+    against the escaped form of each title so embedded ampersands etc.
+    match. Longest titles first so "FieldMapper-main" beats "main" when
+    both are present. Word-boundary guards keep the match from triggering
+    inside unrelated prose (e.g., "mainframe" shouldn't match "main").
+    """
+    if not doc_titles:
+        return html_text
+    # Sort descending by length — prevents a shorter title from winning
+    # the substring race when one is a prefix of another.
+    sorted_titles = sorted(doc_titles, key=lambda t: len(t[0]), reverse=True)
+    for title, doc_id in sorted_titles:
+        if not title or not title.strip():
+            continue
+        escaped = html.escape(title, quote=False)
+        # Case-insensitive match — narrators paraphrase capitalization
+        # ("Visual Reasoning Executive Brief" vs "Visual Reasoning
+        # executive brief"). Word-boundary guards keep "main" from
+        # matching "mainframe". Keeps original casing from the prose in
+        # the link's visible text — feels more natural than forcing the
+        # canonical form, which would read like a replacement.
+        pattern = r"(?<![\w-])" + re.escape(escaped) + r"(?![\w-])"
+        placeholder = f"\x00DOC{doc_id}\x00"
+        # Use a callable repl so we can preserve the original casing that
+        # appeared in the prose — the anchor's text is whatever the
+        # narrator wrote, not the canonical title.
+        def _sub(m: re.Match, _ph=placeholder) -> str:
+            return _ph + m.group(0) + _ph
+        html_text = re.sub(pattern, _sub, html_text, flags=re.IGNORECASE)
+        # Two-step swap so the link's href is stable but its text keeps
+        # the prose's original casing.
+        open_tag = f'<a class="doc-link" href="{base_path}docs/{doc_id}.html">'
+        close_tag = "</a>"
+        parts = html_text.split(placeholder)
+        # Pattern after split: [..pre, OPEN, matched_text, CLOSE, ...pre2, ...]
+        # i.e. placeholders alternate open/close. Rebuild with tags.
+        rebuilt = []
+        for i, part in enumerate(parts):
+            rebuilt.append(part)
+            if i < len(parts) - 1:
+                rebuilt.append(open_tag if i % 2 == 0 else close_tag)
+        html_text = "".join(rebuilt)
+    return html_text
+
+
 def detect_unanchored(prose: str) -> list[str]:
     """Return list of unanchored past-tense phrases — hallucination signals."""
     out: list[str] = []

@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         stats = render_site(cfg.db_path, out, cfg.claude_home)
         print(f"rendered: feed + {stats['project_index']} project feeds + "
               f"{stats['project_day']} project-day pages + {stats.get('weekly',0)} weekly + "
-              f"{stats.get('monthly',0)} monthly + "
+              f"{stats.get('monthly',0)} monthly + {stats.get('docs',0)} documents + "
               f"{stats.get('daily_redirect',0)} redirect stubs -> {out}")
         return 0
 
@@ -295,6 +295,83 @@ def main(argv: list[str] | None = None) -> int:
                     except Exception as exc:
                         self._reply({"installed": False, "error": str(exc)}, 500)
                     return
+                if self.path == "/api/docs":
+                    try:
+                        from claudejournal import docs as docsmod
+                        from claudejournal.db import connect as _c
+                        _conn = _c(cfg.db_path)
+                        try:
+                            # Also return the project list so the modal can
+                            # populate its picker without a second round-trip.
+                            project_rows = _conn.execute(
+                                "SELECT id, display_name FROM projects ORDER BY display_name"
+                            ).fetchall()
+                            projects = [
+                                {"id": r["id"], "name": r["display_name"]}
+                                for r in project_rows
+                            ]
+                        finally:
+                            _conn.close()
+                        self._reply({
+                            "documents": docsmod.list_documents(cfg),
+                            "projects": projects,
+                        })
+                    except Exception as exc:
+                        self._reply({"error": str(exc)}, 500)
+                    return
+                # /api/docs/<id>/file — stream the original file as a
+                # download. Routed through the API (not a static mount)
+                # so we can set the proper Content-Disposition filename
+                # and never expose the db/docs/ directory directly.
+                if self.path.startswith("/api/docs/") and self.path.endswith("/file"):
+                    doc_id = self.path[len("/api/docs/"):-len("/file")]
+                    if not doc_id or "/" in doc_id:
+                        self.send_error(400); return
+                    try:
+                        from claudejournal.db import connect as _c
+                        _conn = _c(cfg.db_path)
+                        try:
+                            row = _conn.execute(
+                                "SELECT path, original_filename, ext FROM documents WHERE id = ?",
+                                (doc_id,),
+                            ).fetchone()
+                        finally:
+                            _conn.close()
+                        if not row:
+                            self.send_error(404); return
+                        from pathlib import Path as _Path
+                        fp = _Path(row["path"])
+                        if not fp.exists():
+                            self.send_error(404); return
+                        # Pick a sensible Content-Type — don't guess too
+                        # hard, the browser will do the right thing based
+                        # on filename + magic for anything we don't cover.
+                        ext = (row["ext"] or "").lower()
+                        mime = {
+                            ".pdf":  "application/pdf",
+                            ".md":   "text/markdown; charset=utf-8",
+                            ".txt":  "text/plain; charset=utf-8",
+                            ".html": "text/html; charset=utf-8",
+                        }.get(ext, "application/octet-stream")
+                        data = fp.read_bytes()
+                        # Force a literal ASCII filename for the header;
+                        # browsers are lenient but belt-and-suspenders.
+                        fname = (row["original_filename"] or f"{doc_id}{ext}").replace('"', "")
+                        self.send_response(200)
+                        self.send_header("Content-Type", mime)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.send_header(
+                            "Content-Disposition",
+                            f'attachment; filename="{fname}"',
+                        )
+                        # Let the cross-origin headers from end_headers()
+                        # still apply — keeps SharedArrayBuffer contract.
+                        self.end_headers()
+                        self.wfile.write(data)
+                    except Exception as exc:
+                        try: self.send_error(500, str(exc)[:200])
+                        except Exception: pass
+                    return
                 return super().do_GET()
 
             def do_POST(self):
@@ -331,6 +408,63 @@ def main(argv: list[str] | None = None) -> int:
                     threading.Thread(target=_run_pipeline_bg, daemon=True).start()
                     self._reply({"running": True, "started_at": time.time()})
                     return
+                if self.path == "/api/docs":
+                    # Accept JSON body with a base64-encoded file payload.
+                    # Multipart parsing in stdlib was deprecated in 3.12 and
+                    # requires pulling in third-party parsers; base64 keeps
+                    # the handler terse. 25 MB cap guards against accidents.
+                    import base64 as _b64, tempfile as _tf
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if length > 25 * 1024 * 1024:
+                        self._reply({"error": "document too large (>25MB). Raise the cap in cli.py if this is legitimate."}, 413)
+                        return
+                    raw = self.rfile.read(length).decode("utf-8", "replace") if length else "{}"
+                    try:
+                        payload = _json.loads(raw)
+                        filename = (payload.get("filename") or "").strip()
+                        content_b64 = payload.get("content_base64") or ""
+                        if not filename or not content_b64:
+                            self._reply({"error": "filename and content_base64 are required"}, 400)
+                            return
+                        content = _b64.b64decode(content_b64)
+                        # Write to a temp file so add_document's path-based
+                        # extraction can run unchanged. add_document then
+                        # copies into db/docs/ under its own generated id.
+                        suffix = Path(filename).suffix or ""
+                        with _tf.NamedTemporaryFile(
+                            delete=False, suffix=suffix, dir=str(cfg.db_path.parent)
+                        ) as tmp:
+                            tmp.write(content)
+                            tmp_path = Path(tmp.name)
+                        try:
+                            from claudejournal import docs as docsmod
+                            result = docsmod.add_document(
+                                cfg, tmp_path,
+                                title=(payload.get("title") or "").strip() or None,
+                                projects=payload.get("projects") or [],
+                                tags=payload.get("tags") or [],
+                                note=(payload.get("note") or "").strip(),
+                                original_filename=filename,
+                                model=(payload.get("model") or "haiku"),
+                                verbose=False,
+                            )
+                        finally:
+                            # Source file was copied by add_document — its
+                            # own copy lives under db/docs/. Clean up ours.
+                            try: tmp_path.unlink()
+                            except FileNotFoundError: pass
+                        self._reply({"ok": True, "id": result["id"],
+                                     "filename": filename,
+                                     "chars": result["chars"],
+                                     "projects": result["projects"],
+                                     "tags": result["tags"],
+                                     "added_date": result["added_date"]})
+                    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+                        self._reply({"error": str(exc)[:500]}, 400)
+                    except Exception as exc:
+                        self._reply({"error": str(exc)[:500]}, 500)
+                    return
+
                 if self.path == "/api/schedule/install":
                     length = int(self.headers.get("Content-Length") or 0)
                     raw = self.rfile.read(length).decode("utf-8", "replace") if length else "{}"
@@ -349,6 +483,59 @@ def main(argv: list[str] | None = None) -> int:
                         self._reply(sch.uninstall())
                     except Exception as exc:
                         self._reply({"ok": False, "raw": str(exc)}, 500)
+                    return
+                self.send_error(404)
+
+            def do_DELETE(self):
+                # /api/docs/<id>  — hard-remove a document. Cascade
+                # invalidation happens via the hash in narrate.py on
+                # the next pipeline cycle; nothing to do here beyond
+                # deleting the row + file.
+                if self.path.startswith("/api/docs/"):
+                    doc_id = self.path.rsplit("/", 1)[-1]
+                    if not doc_id:
+                        self._reply({"error": "missing document id"}, 400)
+                        return
+                    try:
+                        from claudejournal import docs as docsmod
+                        docsmod.remove_document(cfg, doc_id, verbose=False)
+                        self._reply({"ok": True, "id": doc_id})
+                    except ValueError as exc:
+                        self._reply({"error": str(exc)}, 404)
+                    except Exception as exc:
+                        self._reply({"error": str(exc)[:500]}, 500)
+                    return
+                self.send_error(404)
+
+            def do_PATCH(self):
+                # /api/docs/<id>  — update title / projects / tags / note.
+                # File and added_date are intentionally not editable; see
+                # update_document() for the reasoning. Summary regenerates
+                # in-line when title or note changed.
+                if self.path.startswith("/api/docs/"):
+                    doc_id = self.path.rsplit("/", 1)[-1]
+                    if not doc_id:
+                        self._reply({"error": "missing document id"}, 400)
+                        return
+                    length = int(self.headers.get("Content-Length") or 0)
+                    raw = self.rfile.read(length).decode("utf-8", "replace") if length else "{}"
+                    try:
+                        payload = _json.loads(raw)
+                        from claudejournal import docs as docsmod
+                        result = docsmod.update_document(
+                            cfg, doc_id,
+                            title=payload.get("title"),
+                            projects=payload.get("projects"),
+                            tags=payload.get("tags"),
+                            note=payload.get("note"),
+                            model=(payload.get("model") or "haiku"),
+                            verbose=False,
+                        )
+                        self._reply({"ok": True, **result})
+                    except ValueError as exc:
+                        self._reply({"error": str(exc)}, 404)
+                    except Exception as exc:
+                        self._reply({"error": str(exc)[:500]}, 500)
                     return
                 self.send_error(404)
 

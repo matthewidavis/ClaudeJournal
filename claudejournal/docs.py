@@ -339,17 +339,26 @@ def add_document(cfg: Config, source_path: Path, *,
                  projects: list[str] | None = None,
                  tags: list[str] | None = None,
                  note: str = "",
+                 original_filename: str | None = None,
                  model: str = "haiku",
                  verbose: bool = True) -> dict:
     """Add a document to the library. Copies the file into db/docs/,
     extracts text, summarizes, and links the resulting narration into the
     existing cascade. Returns a stats dict with the new doc id + summary
-    status."""
+    status.
+
+    `original_filename` lets the HTTP handler pass the upload's real name
+    when `source_path` is a temp file — preserves the human-readable name
+    for display and drives the extension / default-title selection."""
     source_path = source_path.expanduser()
     if not source_path.exists() or not source_path.is_file():
         raise FileNotFoundError(f"not a file: {source_path}")
 
-    ext = _normalize_ext(source_path)
+    display_name = original_filename or source_path.name
+    name_path = Path(display_name)
+    # Prefer the original filename's extension over the temp file's (the
+    # upload path usually has the right ext; temp files may not).
+    ext = _normalize_ext(name_path)
     if ext not in (".pdf", ".md", ".txt", ".html"):
         raise ValueError(
             f"unsupported extension {ext!r}. Supported: .pdf .md .txt .html"
@@ -365,7 +374,7 @@ def add_document(cfg: Config, source_path: Path, *,
     except Exception as exc:
         # Don't leave an orphaned file if extraction crashes outright.
         dest_path.unlink(missing_ok=True)
-        raise RuntimeError(f"extraction failed for {source_path.name}: {exc}") from exc
+        raise RuntimeError(f"extraction failed for {display_name}: {exc}") from exc
 
     content_hash = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
     now_utc = datetime.now(timezone.utc)
@@ -386,8 +395,8 @@ def add_document(cfg: Config, source_path: Path, *,
                 added_at, added_date)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                doc_id, title or source_path.stem, str(dest_path),
-                source_path.name, ext, content_hash,
+                doc_id, title or name_path.stem, str(dest_path),
+                display_name, ext, content_hash,
                 text, note,
                 json.dumps(resolved_pids), json.dumps(clean_tags),
                 added_at, added_date,
@@ -396,7 +405,7 @@ def add_document(cfg: Config, source_path: Path, *,
         conn.commit()
 
         if verbose:
-            print(f"added {doc_id}  {source_path.name}  "
+            print(f"added {doc_id}  {display_name}  "
                   f"({len(text):,} chars, projects={resolved_pids or '-'})")
 
         summary_stats = summarize_document(conn, doc_id, model=model, verbose=verbose)
@@ -429,7 +438,8 @@ def list_documents(cfg: Config) -> list[dict]:
     try:
         rows = conn.execute(
             """SELECT id, title, original_filename, added_date, added_at,
-                      project_ids, tags, ext, length(extracted_text) AS chars
+                      project_ids, tags, ext, user_note,
+                      length(extracted_text) AS chars
                FROM documents ORDER BY added_date DESC, added_at DESC"""
         ).fetchall()
     finally:
@@ -445,9 +455,94 @@ def list_documents(cfg: Config) -> list[dict]:
             "added_at": r["added_at"],
             "projects": _parse_json_list(r["project_ids"]),
             "tags": _parse_json_list(r["tags"]),
+            "note": r["user_note"] or "",
             "chars": r["chars"] or 0,
         })
     return out
+
+
+def update_document(cfg: Config, doc_id: str, *,
+                    title: str | None = None,
+                    projects: list[str] | None = None,
+                    tags: list[str] | None = None,
+                    note: str | None = None,
+                    model: str = "haiku",
+                    verbose: bool = True) -> dict:
+    """Update metadata on an existing document. Only the four fields that
+    are safe to change post-ingest — title, projects, tags, note — can be
+    edited. The file and added_date are intentionally immutable: changing
+    the file under the same id would silently invalidate everything that
+    referenced the old content; changing the date would shift the cascade
+    anchor without the user seeing why narrations suddenly moved.
+
+    Passing None for any field leaves it unchanged. The summary is
+    regenerated when title or note changes (both participate in the
+    summary input hash). Narrations referencing this doc re-invalidate
+    automatically on next pipeline cycle via the existing cascade.
+    """
+    conn = connect(cfg.db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM documents WHERE id = ?", (doc_id,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"no such document: {doc_id}")
+
+        updates: list[str] = []
+        params: list = []
+        resummarize = False
+
+        if title is not None and title != (row["title"] or ""):
+            updates.append("title = ?"); params.append(title)
+            resummarize = True
+
+        if note is not None and note != (row["user_note"] or ""):
+            updates.append("user_note = ?"); params.append(note)
+            resummarize = True
+
+        if projects is not None:
+            resolved_pids, unknown_hints = _resolve_projects(conn, projects)
+            if unknown_hints and verbose:
+                print(f"  warning: unknown project hint(s) ignored: {unknown_hints}")
+            new_json = json.dumps(resolved_pids)
+            if new_json != (row["project_ids"] or "[]"):
+                updates.append("project_ids = ?"); params.append(new_json)
+
+        if tags is not None:
+            clean = _clean_tags(tags)
+            new_json = json.dumps(clean)
+            if new_json != (row["tags"] or "[]"):
+                updates.append("tags = ?"); params.append(new_json)
+
+        if not updates:
+            if verbose: print(f"  no changes for {doc_id}")
+            return {"id": doc_id, "updated": False}
+
+        params.append(doc_id)
+        conn.execute(
+            f"UPDATE documents SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+
+        summary_result = None
+        if resummarize:
+            # Summary hash depends on title + note + text, so changing
+            # either field forces a regen. The narration cascade picks up
+            # the new summary_hash on its next cycle automatically.
+            summary_result = summarize_document(
+                conn, doc_id, model=model, force=True, verbose=verbose,
+            )
+
+        if verbose:
+            print(f"updated {doc_id}: {', '.join(u.split(' = ')[0] for u in updates)}")
+        return {
+            "id": doc_id, "updated": True,
+            "fields_changed": [u.split(" = ")[0] for u in updates],
+            "summary": summary_result,
+        }
+    finally:
+        conn.close()
 
 
 def remove_document(cfg: Config, doc_id: str, *, verbose: bool = True) -> dict:

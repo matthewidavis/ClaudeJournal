@@ -5,7 +5,7 @@ import html
 from datetime import datetime
 from typing import Iterable
 
-from claudejournal.post_process import link_anchors
+from claudejournal.post_process import link_anchors, link_doc_titles
 
 
 CSS = """
@@ -160,7 +160,11 @@ article.entry mark.search-hit,
 }
 .entry-head .meta .mood { color: var(--accent-soft); font-style: italic; }
 
-/* TTS — per-entry play buttons + floating bubble */
+/* TTS — per-entry play buttons. Audio is served from pre-rendered WAVs
+   under out/audio/. No browser-side fallback: if a WAV is missing the
+   button opens the "still being generated" modal instead of trying to
+   synthesize in-browser (which was unreliable and required ~100MB of
+   model downloads). */
 .tts-play {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; margin-left: 8px; padding: 0;
@@ -171,96 +175,34 @@ article.entry mark.search-hit,
 }
 .tts-play:hover { border-color: var(--accent); color: var(--accent); background: var(--chip); }
 .tts-play.playing { background: var(--accent); color: var(--paper); border-color: var(--accent); }
-.tts-play.loading { opacity: 0.6; cursor: wait; }
-.tts-bubble {
-  position: fixed; left: 20px; bottom: 20px; z-index: 1000;
-  width: 44px; height: 44px; border-radius: 50%;
-  background: var(--paper); border: 1px solid var(--rule);
-  color: var(--accent); cursor: pointer; box-shadow: var(--shadow);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 18px; transition: transform 0.15s, background 0.15s;
-}
-.tts-bubble:hover { transform: scale(1.06); background: var(--chip); }
-.tts-bubble.playing { background: var(--accent); color: var(--paper); border-color: var(--accent); }
 .tts-play.paused { background: var(--accent-soft); color: var(--paper); border-color: var(--accent-soft); }
-.tts-restart-inline {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; margin-left: 4px; padding: 0;
-  border: 1px solid var(--rule); border-radius: 50%;
-  background: var(--paper); color: var(--accent-soft); cursor: pointer;
-  font-size: 11px; line-height: 1; vertical-align: 0.15em;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.tts-restart-inline:hover { border-color: var(--accent); color: var(--accent); background: var(--chip); }
+.tts-play.loading { opacity: 0.6; cursor: wait; }
 
-/* Scrub bar — slotted below the entry header while that entry is active */
-.tts-scrub {
-  display: flex; align-items: center; gap: 10px;
-  margin: 4px 0 14px; padding: 6px 10px;
-  background: var(--chip); border-radius: 20px;
-  font-family: ui-monospace, Consolas, monospace; font-size: 11px;
-  color: var(--muted);
+/* "Audio not ready" modal — shown when a play click resolves to a
+   missing WAV. Message is deliberately single-state (piper is now a
+   hard pip dependency, so "install piper" is no longer a real case). */
+#tts-not-ready {
+  position: fixed; inset: 0; background: rgba(250, 246, 236, 0.75);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  display: none; align-items: center; justify-content: center;
+  z-index: 60; padding: 24px;
 }
-.tts-scrub input[type=range] {
-  flex: 1; height: 4px; -webkit-appearance: none; appearance: none;
-  background: var(--rule); border-radius: 2px; outline: none; cursor: pointer;
+#tts-not-ready.open { display: flex; }
+#tts-not-ready .tts-nr-card {
+  max-width: 420px; background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 22px 26px;
+  box-shadow:
+    0 1px 3px rgba(70, 50, 20, 0.08),
+    0 10px 30px rgba(70, 50, 20, 0.18);
 }
-.tts-scrub input[type=range]::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 12px; height: 12px;
-  border-radius: 50%; background: var(--accent); cursor: pointer;
+#tts-not-ready h3 { margin: 0 0 8px; font-size: 16px; font-weight: 500; }
+#tts-not-ready p { margin: 0 0 14px; font-size: 14px; line-height: 1.55; color: var(--fg); }
+#tts-not-ready button {
+  padding: 7px 16px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--accent-soft); background: var(--accent-soft);
+  color: var(--paper); font: 13px ui-sans-serif, system-ui, sans-serif;
 }
-.tts-scrub input[type=range]::-moz-range-thumb {
-  width: 12px; height: 12px; border: none; border-radius: 50%;
-  background: var(--accent); cursor: pointer;
-}
-.tts-scrub .tts-time { white-space: nowrap; }
-
-/* Sentence-follow highlight — noticeable but still warm and paper-like. */
-.tts-sentence {
-  transition: background-color 0.2s ease, box-shadow 0.2s ease;
-  border-radius: 3px;
-  padding: 0 2px;
-  margin: 0 -2px;
-}
-.tts-sentence.tts-active {
-  background-color: #f5e6a8;   /* warm highlighter yellow, tuned for the paper palette */
-  box-shadow: 0 0 0 2px #f5e6a8;
-}
-.tts-bubble.downloading {
-  background: conic-gradient(var(--accent-soft) var(--tts-pct, 0%), var(--paper) 0);
-  color: var(--accent);
-}
-.tts-bubble.downloading::after {
-  content: attr(data-pct);
-  position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 9px; font-family: ui-monospace, Consolas, monospace;
-  color: var(--accent); background: var(--paper);
-  border-radius: 50%; width: 30px; height: 30px;
-  display: flex; align-items: center; justify-content: center;
-}
-.tts-panel {
-  position: fixed; left: 20px; bottom: 76px; z-index: 1000;
-  width: 260px; padding: 14px; background: var(--paper);
-  border: 1px solid var(--rule); border-radius: 10px;
-  box-shadow: var(--shadow); display: none;
-  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
-}
-.tts-panel.open { display: block; }
-.tts-panel h4 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--fg); font-family: inherit; }
-.tts-panel label { display: block; margin: 8px 0 4px; color: var(--muted); }
-.tts-panel select {
-  width: 100%; padding: 4px 6px; border: 1px solid var(--rule);
-  border-radius: 4px; background: var(--bg); color: var(--fg);
-  font-family: inherit; font-size: 12px;
-}
-.tts-panel button {
-  width: 100%; margin-top: 10px; padding: 6px; cursor: pointer;
-  background: var(--accent); color: var(--paper); border: none;
-  border-radius: 4px; font-family: inherit; font-size: 12px;
-}
-.tts-panel button.secondary { background: var(--paper); color: var(--fg); border: 1px solid var(--rule); }
-.tts-panel .tts-status { margin-top: 10px; color: var(--muted); font-size: 11px; min-height: 14px; }
+#tts-not-ready button:hover { background: var(--accent); border-color: var(--accent); }
 .entry-body p { margin: 0 0 16px; }
 .entry-body p:last-child { margin-bottom: 0; }
 .entry-body a.anchor {
@@ -393,6 +335,125 @@ article.entry mark.search-hit,
 }
 .month-rollup mark.search-hit { background: #f5e6a8; }
 
+/* ── Per-document page ──────────────────────────────────────────────── */
+.doc-page {
+  max-width: 720px; margin: 20px auto; padding: 22px 28px;
+  background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 4px; box-shadow: var(--shadow);
+  font-size: 15px; line-height: 1.65;
+}
+.doc-page h2 { margin: 0 0 4px; font-size: 22px; font-weight: 500; }
+.doc-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 14px;
+}
+.doc-meta code {
+  background: var(--chip); padding: 1px 7px; border-radius: 10px;
+  font-size: 11px; margin-right: 2px;
+}
+.doc-hook {
+  font-size: 16px; line-height: 1.55; color: var(--fg);
+  font-style: italic; border-left: 3px solid var(--accent-soft);
+  padding: 4px 0 4px 14px; margin: 0 0 16px;
+}
+.doc-section { margin: 18px 0; }
+.doc-section h3 {
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.06em; margin: 0 0 6px;
+}
+.doc-section p { margin: 0 0 10px; }
+.doc-section ul { padding-left: 22px; margin: 4px 0; }
+.doc-section li { margin: 4px 0; }
+.doc-note {
+  background: var(--bg); padding: 12px 16px; border-radius: 4px;
+  border-left: 3px solid var(--accent-soft);
+}
+.doc-note p { font-style: italic; color: var(--fg); }
+.doc-download {
+  margin: 22px 0 6px; font-size: 13px;
+}
+.doc-download a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent); padding-bottom: 1px;
+}
+.doc-download a:hover { border-bottom-style: solid; }
+.doc-ext { color: var(--muted); font-size: 12px; }
+.doc-excerpt { margin-top: 22px; }
+.doc-excerpt summary {
+  cursor: pointer; font-size: 13px; color: var(--muted);
+  padding: 8px 0; border-top: 1px solid var(--rule);
+  font-family: ui-monospace, Consolas, monospace;
+}
+.doc-excerpt summary:hover { color: var(--accent); }
+.doc-excerpt-hint { opacity: 0.7; font-size: 11px; }
+.doc-excerpt-body {
+  padding: 12px 0; font-size: 14px; line-height: 1.6;
+  color: var(--fg); font-family: ui-serif, Georgia, serif;
+}
+.doc-excerpt-body p { margin: 0 0 10px; }
+.doc-trunc { color: var(--muted); font-style: italic; font-size: 13px; }
+
+/* Document entry in the main feed (Library view). Sits alongside daily
+   entries as a peer; slightly tighter block to visually distinguish. */
+article.entry.doc-entry {
+  background: var(--paper); border-left: 3px solid var(--accent-soft);
+  padding: 14px 18px; margin: 14px 0;
+}
+article.entry.doc-entry .meta { color: var(--accent); opacity: 0.85; }
+.doc-feed-hook {
+  font-size: 15px; line-height: 1.55; font-style: italic;
+  color: var(--fg); margin: 8px 0;
+}
+.doc-feed-section { margin: 12px 0; }
+.doc-feed-section h4 {
+  margin: 0 0 4px; font-size: 12px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+}
+.doc-feed-section p { margin: 0 0 6px; font-size: 14px; line-height: 1.6; }
+.doc-feed-section ul { padding-left: 22px; margin: 4px 0; font-size: 14px; line-height: 1.6; }
+.doc-feed-section li { margin: 3px 0; }
+.doc-feed-note {
+  background: var(--bg); padding: 10px 14px; border-radius: 4px;
+  border-left: 3px solid var(--accent-soft);
+}
+.doc-feed-note p { font-style: italic; color: var(--fg); margin: 0; }
+.doc-feed-tags { margin: 6px 0; }
+.doc-feed-tags code {
+  background: var(--chip); padding: 1px 7px; border-radius: 10px;
+  font-size: 11px; color: var(--muted); margin-right: 3px;
+}
+.doc-feed-more {
+  margin: 10px 0 0; font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.doc-feed-more a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+
+/* Doc title links — wherever a narrator mentioned a document, its title
+   is wrapped in this class so clicking lands on the doc's page. */
+a.doc-link {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+  padding-bottom: 1px;
+}
+a.doc-link:hover { border-bottom-style: solid; }
+
+/* Day-has-docs indicator — small chip in the day header. */
+.day-docs {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  margin-left: 10px;
+}
+.day-docs a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+}
+.day-docs a:hover { border-bottom-style: solid; }
+
 /* Empty day */
 .day-activity-only {
   color: var(--muted); font-size: 14px; font-style: italic;
@@ -426,9 +487,231 @@ article.entry mark.search-hit,
 .crumb a { color: var(--accent); text-decoration: none; }
 .crumb a:hover { border-bottom: 1px dotted var(--accent); }
 
-/* Ask pill — fixed top-left. Primary action, always reachable. */
-#chat-fab {
+/* Library pill — paired with Ask in a flex wrapper, top-left. Both live
+   in the same action cluster so "things I can do with the journal" reads
+   as one affordance, with filled (Ask) vs outlined (Library) signaling
+   primary vs secondary. The wrapper handles positioning so the two pills
+   flow past each other when Ask expands on hover. */
+#library-fab {
+  position: static; z-index: 40;
+  height: 34px; padding: 0 16px;
+  border-radius: 17px; background: var(--paper); color: var(--accent);
+  border: 1px solid var(--accent-soft); cursor: pointer;
+  box-shadow: 0 2px 8px rgba(90, 50, 20, 0.12);
+  font: 500 13px/1 ui-sans-serif, system-ui, -apple-system, Helvetica, sans-serif;
+  letter-spacing: 0.02em;
+  display: inline-flex; align-items: center; gap: 7px;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.18s ease, padding 0.22s ease;
+}
+#library-fab:hover {
+  background: var(--accent-soft); color: var(--paper);
+  border-color: var(--accent-soft);
+  box-shadow: 0 4px 12px rgba(90, 50, 20, 0.22);
+  padding: 0 20px;
+}
+#library-fab .lib-icon { font-size: 13px; line-height: 1; opacity: 0.9; }
+#library-fab .hint {
+  font-weight: 400; font-size: 11.5px; opacity: 0;
+  max-width: 0; overflow: hidden; white-space: nowrap;
+  transition: max-width 0.25s ease, opacity 0.2s ease 0.05s, margin-left 0.25s ease;
+}
+#library-fab:hover .hint { opacity: 0.85; max-width: 120px; margin-left: 4px; }
+
+/* Library modal — shares structural pattern with chat-modal but its own
+   namespace so the two can coexist. */
+#library-modal {
+  position: fixed; inset: 0; background: rgba(250, 246, 236, 0.75);
+  backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+  display: none; align-items: center; justify-content: center;
+  z-index: 50; padding: 24px;
+}
+#library-modal.open { display: flex; }
+#library-panel {
+  width: 100%; max-width: 720px; max-height: 84vh;
+  background: var(--paper); border-radius: 10px;
+  /* Layered shadow: a tight close-to-edge shadow for definition, plus a
+     larger soft one for depth. Against a paper-toned veil backdrop this
+     gives the panel clear lift without darkening the page. */
+  box-shadow:
+    0 1px 3px rgba(70, 50, 20, 0.08),
+    0 10px 30px rgba(70, 50, 20, 0.18),
+    0 24px 60px rgba(70, 50, 20, 0.14);
+  border: 1px solid var(--rule);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#library-head {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 20px; border-bottom: 1px solid var(--rule);
+  /* Subtle tone shift so the header has weight without shouting — same
+     shade the page background uses, so it reads as a "band" not a panel. */
+  background: var(--bg);
+}
+#library-head h3 {
+  margin: 0; font-size: 16px; font-weight: 500;
+  color: var(--fg); letter-spacing: 0.01em;
+}
+#library-close {
+  background: none; border: none; color: var(--muted); font-size: 20px;
+  cursor: pointer; line-height: 1;
+}
+#library-close:hover { color: var(--fg); }
+#library-body {
+  flex: 1; overflow-y: auto; padding: 16px 20px;
+  display: flex; flex-direction: column; gap: 20px;
+}
+.lib-section h4 {
+  margin: 0 0 8px; font-size: 13px; font-weight: 600;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+}
+.lib-add-form {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 14px; background: var(--paper); border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.lib-add-form label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--muted);
+}
+.lib-add-form input[type="text"],
+.lib-add-form textarea,
+.lib-add-form select {
+  font: 14px ui-sans-serif, system-ui, -apple-system, sans-serif;
+  padding: 7px 10px; border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--paper); color: var(--fg);
+}
+.lib-add-form textarea {
+  resize: vertical; min-height: 56px; font-family: inherit;
+}
+.lib-add-form select[multiple] { min-height: 88px; }
+
+/* Project picker — searchable chip list. Matches the filter-longpool
+   pattern from the main filter bar so the UX idiom is consistent. */
+.lib-project-search {
+  width: 100%; padding: 6px 10px; font-size: 13px;
+  border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--paper); color: var(--fg);
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+.lib-project-search:focus { outline: none; border-color: var(--accent-soft); }
+.lib-project-list {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  max-height: 140px; overflow-y: auto;
+  padding: 8px; margin-top: 6px;
+  /* Slightly darker than the chips themselves so each chip reads as a
+     raised outlined pill — same trick the top-page filter row uses. */
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 4px;
+}
+/* Project chips mirror the main filter-chip idiom exactly so the UX
+   language is consistent: outlined at rest, accent-bordered on hover,
+   fully accent-filled only when selected. Uses <button> for accessibility
+   (it's a toggle control, not a link), which means we have to override
+   the browser's default button chrome explicitly. */
+.lib-project-chip {
+  appearance: none; -webkit-appearance: none;
+  display: inline-block; padding: 3px 12px; font-size: 12px; line-height: 1.4;
+  border: 1px solid var(--rule); border-radius: 14px; cursor: pointer;
+  background: var(--paper); color: var(--muted); text-decoration: none;
+  font-family: ui-monospace, Consolas, monospace;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.lib-project-chip:hover { border-color: var(--accent-soft); color: var(--accent); }
+.lib-project-chip.selected {
+  background: var(--accent); color: var(--paper); border-color: var(--accent);
+}
+.lib-project-chip.selected:hover { background: #6f3916; }
+.lib-project-chip.selected::after { content: " ×"; opacity: 0.8; }
+.lib-project-empty {
+  color: var(--muted); font-style: italic; font-size: 12px;
+  padding: 8px; width: 100%; text-align: center;
+}
+.lib-project-count { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.lib-drop-zone {
+  border: 2px dashed var(--rule); border-radius: 6px; padding: 18px;
+  text-align: center; color: var(--muted); font-size: 13px;
+  background: var(--paper); cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.lib-drop-zone.drag-over {
+  border-color: var(--accent); background: var(--accent-soft); color: var(--paper);
+}
+.lib-drop-zone .lib-file-name {
+  display: block; margin-top: 6px; color: var(--fg); font-weight: 500;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.lib-add-form .lib-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* Scope the action-button styles to .lib-actions explicitly — an un-scoped
+   `.lib-add-form button` rule was matching the project chips (which are
+   <button>s nested inside the form) and painting them with the Add
+   button's accent-fill. Chips keep their own .lib-project-chip styling. */
+.lib-add-form .lib-actions button {
+  font: 13px ui-sans-serif, system-ui, -apple-system, sans-serif;
+  padding: 7px 16px; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--accent-soft); background: var(--accent-soft); color: var(--paper);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.lib-add-form .lib-actions button:hover { background: var(--accent); border-color: var(--accent); }
+.lib-add-form .lib-actions button[type="reset"] {
+  background: var(--paper); color: var(--fg); border-color: var(--rule);
+}
+.lib-add-form .lib-actions button[type="reset"]:hover { background: var(--paper); border-color: var(--accent-soft); color: var(--accent); }
+.lib-add-form .lib-actions button:disabled { opacity: 0.5; cursor: wait; }
+.lib-status {
+  font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  min-height: 16px;
+}
+.lib-status.lib-error { color: #a03020; }
+.lib-status.lib-ok { color: var(--ok, #3d7a3d); }
+.lib-list { display: flex; flex-direction: column; gap: 6px; }
+.lib-row {
+  display: grid; grid-template-columns: 84px 1fr auto;
+  gap: 12px; align-items: start;
+  padding: 10px 12px; background: var(--paper);
+  border: 1px solid var(--rule); border-radius: 6px;
+  font-size: 13px;
+}
+.lib-row .lib-date {
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px; padding-top: 2px;
+}
+.lib-row .lib-meta { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.lib-row .lib-title { color: var(--fg); font-weight: 500; }
+.lib-row .lib-actions-cell { display: flex; gap: 6px; }
+.lib-row .lib-edit,
+.lib-row .lib-remove {
+  background: none; border: 1px solid var(--rule); border-radius: 4px;
+  color: var(--muted); cursor: pointer; padding: 3px 10px; font-size: 12px;
+}
+.lib-row .lib-edit:hover { border-color: var(--accent-soft); color: var(--accent); }
+.lib-row .lib-remove:hover { border-color: #a03020; color: #a03020; }
+
+/* Edit-mode affordances on the add form. Header picks up a tint so the
+   mode switch is obvious without a full panel restyle. Cancel button
+   only appears during edit. */
+.lib-add-form.editing { border-color: var(--accent-soft); }
+.lib-form-title {
+  font-size: 13px; font-weight: 500; color: var(--accent);
+  margin: -2px 0 4px;
+}
+.lib-add-form:not(.editing) .lib-form-title { display: none; }
+.lib-add-form:not(.editing) #lib-cancel-edit { display: none; }
+.lib-add-form.editing .lib-drop-zone { display: none; }
+.lib-empty {
+  color: var(--muted); font-style: italic; font-size: 13px;
+  text-align: center; padding: 20px 0;
+}
+
+/* Top-left action cluster — Ask (primary, filled) paired with Library
+   (secondary, outlined). Wrapper is the one fixed-position element so
+   the two pills flow naturally when Ask widens on hover. */
+#top-actions {
   position: fixed; top: 18px; left: 18px; z-index: 40;
+  display: flex; gap: 10px; align-items: center;
+}
+
+/* Ask pill — primary action, always reachable. */
+#chat-fab {
+  position: static; z-index: 40;
   height: 34px; padding: 0 18px;
   border-radius: 17px; background: var(--accent); color: var(--paper);
   border: 1px solid var(--accent); cursor: pointer;
@@ -664,8 +947,8 @@ FILTER_WIDGET = """
   // Entry-type filter. 'all' shows everything; the others hide the two
   // element kinds that don't match (dailies are <article.entry>, weeklies
   // live in .week-rollup-wrap, monthlies in .month-rollup-wrap).
-  const VIEW_KEYS = ['daily', 'weekly', 'monthly'];
-  const VIEW_LABELS = {daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly'};
+  const VIEW_KEYS = ['daily', 'weekly', 'monthly', 'library'];
+  const VIEW_LABELS = {daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', library: 'Library'};
   const AXIS_KEYS = ['project', 'topic', 'year', 'month', 'week', 'mood', 'learning'];
 
   const poolFor = (axis) => {
@@ -854,7 +1137,6 @@ FILTER_WIDGET = """
     // land on the same view as selecting every chip. Intuition wins over
     // forcing "at least one".
     const viewShows = v => state.views.size === 0 || state.views.has(v);
-    const viewHidesDailies = !viewShows('daily');
     entries.forEach(el => {
       // Restore pristine HTML when ANY highlight-producing state changes.
       const restore = searching || wasSearching || highlightingTopic || wasHighlightingTopic;
@@ -862,7 +1144,9 @@ FILTER_WIDGET = """
         el.innerHTML = origCache.get(el);
       }
 
-      if (viewHidesDailies) {
+      // Doc entries belong to the 'library' view; everything else is 'daily'.
+      const viewKey = el.dataset.view === 'library' ? 'library' : 'daily';
+      if (!viewShows(viewKey)) {
         el.classList.add('filter-hidden');
         el.classList.remove('search-hidden');
         return;
@@ -1272,6 +1556,403 @@ ASK_BUTTON = """
 """
 
 
+LIBRARY_BUTTON = """
+<button id="library-fab" type="button" title="Manage library" aria-label="Manage library">
+  <span class="lib-icon">&#x1F4DA;</span><span class="lib-label">Library</span><span class="hint">add reading</span>
+</button>
+"""
+
+
+LIBRARY_WIDGET = """
+<div id="library-modal" role="dialog" aria-label="Manage library">
+  <div id="library-panel">
+    <div id="library-head">
+      <h3>Library</h3>
+      <button id="library-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="library-body">
+
+      <div class="lib-section">
+        <h4>Add a document</h4>
+        <form class="lib-add-form" id="lib-add-form">
+          <div class="lib-form-title" id="lib-form-title"></div>
+          <div class="lib-drop-zone" id="lib-drop">
+            Drop a file here, or click to pick
+            <input type="file" id="lib-file" accept=".pdf,.md,.txt,.html" hidden>
+            <span class="lib-file-name" id="lib-file-name"></span>
+          </div>
+          <label>Title <span style="opacity:.6">(optional, defaults to filename)</span>
+            <input type="text" id="lib-title" maxlength="200">
+          </label>
+          <label>Projects <span style="opacity:.6">(click to toggle, optional)</span>
+            <input type="text" id="lib-project-search" class="lib-project-search" placeholder="filter projects…" autocomplete="off">
+            <div class="lib-project-list" id="lib-project-list"></div>
+            <div class="lib-project-count" id="lib-project-count"></div>
+          </label>
+          <label>Tags <span style="opacity:.6">(comma-separated, optional)</span>
+            <input type="text" id="lib-tags" placeholder="quantization, ml-infra">
+          </label>
+          <label>Why you're adding it — the narrator uses this
+            <textarea id="lib-note" placeholder="what you want the journal to remember about this"></textarea>
+          </label>
+          <div class="lib-actions">
+            <button type="button" id="lib-cancel-edit">Cancel</button>
+            <button type="reset">Clear</button>
+            <button type="submit" id="lib-submit">Add</button>
+          </div>
+          <div class="lib-status" id="lib-status"></div>
+        </form>
+      </div>
+
+      <div class="lib-section">
+        <h4>Current documents</h4>
+        <div class="lib-list" id="lib-list">
+          <div class="lib-empty">loading…</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+<script>
+(function() {
+  const fab = document.getElementById('library-fab');
+  const modal = document.getElementById('library-modal');
+  const closeBtn = document.getElementById('library-close');
+  const form = document.getElementById('lib-add-form');
+  const formTitle = document.getElementById('lib-form-title');
+  const cancelEditBtn = document.getElementById('lib-cancel-edit');
+  const fileInput = document.getElementById('lib-file');
+  const fileName = document.getElementById('lib-file-name');
+  const drop = document.getElementById('lib-drop');
+  const titleInput = document.getElementById('lib-title');
+  const projectSearch = document.getElementById('lib-project-search');
+  const projectList = document.getElementById('lib-project-list');
+  const projectCount = document.getElementById('lib-project-count');
+  const tagsInput = document.getElementById('lib-tags');
+  const noteInput = document.getElementById('lib-note');
+  const submitBtn = document.getElementById('lib-submit');
+  const statusEl = document.getElementById('lib-status');
+  const listEl = document.getElementById('lib-list');
+  if (!fab || !modal) return;
+
+  // Keep the file the user picked; cleared on reset or after successful upload.
+  let currentFile = null;
+  // All projects known to the server (stable across refreshes); and the
+  // subset currently selected. Filter-text lives on the DOM input.
+  let allProjects = [];
+  const selectedProjects = new Set();
+  // Edit mode: when non-null, submit PATCHes that doc id instead of
+  // POSTing a new one. The full doc list is cached from the last refresh
+  // so Edit clicks can pre-fill the form without a separate fetch.
+  let editingId = null;
+  let lastDocs = [];
+
+  function setStatus(msg, kind) {
+    statusEl.textContent = msg || '';
+    statusEl.classList.remove('lib-error', 'lib-ok');
+    if (kind) statusEl.classList.add('lib-' + kind);
+  }
+
+  function openModal() {
+    modal.classList.add('open');
+    // Edit state shouldn't survive a modal close — otherwise the next
+    // opener sees the form still in "Editing: X" mode for a doc they
+    // may have already removed.
+    if (editingId) exitEdit();
+    refresh();
+  }
+  function closeModal() { modal.classList.remove('open'); }
+  fab.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', ev => { if (ev.target === modal) closeModal(); });
+
+  async function refresh() {
+    try {
+      const r = await fetch('/api/docs', {cache: 'no-store'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      renderProjects(data.projects || []);
+      lastDocs = data.documents || [];
+      renderList(lastDocs);
+    } catch (e) {
+      listEl.textContent = '';
+      const err = document.createElement('div');
+      err.className = 'lib-empty';
+      err.textContent = 'could not load library: ' + e.message;
+      listEl.appendChild(err);
+    }
+  }
+
+  function renderProjects(projects) {
+    // Cache the full list; actual chip rendering applies the search filter.
+    allProjects = projects || [];
+    // Drop selections for projects that are no longer known (rare, e.g.
+    // the project was deleted elsewhere while the modal was open).
+    const known = new Set(allProjects.map(p => p.id));
+    for (const id of Array.from(selectedProjects)) {
+      if (!known.has(id)) selectedProjects.delete(id);
+    }
+    applyProjectFilter();
+  }
+
+  function applyProjectFilter() {
+    const q = (projectSearch.value || '').trim().toLowerCase();
+    while (projectList.firstChild) projectList.removeChild(projectList.firstChild);
+    // When searching, narrow the visible set. Selected chips stay visible
+    // even when they don't match the query — otherwise the user can't
+    // tell what they've picked unless they clear the filter.
+    const matches = allProjects.filter(p =>
+      selectedProjects.has(p.id) ||
+      !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)
+    );
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'lib-project-empty';
+      empty.textContent = 'no projects match';
+      projectList.appendChild(empty);
+    } else {
+      // Sort: alphabetical by default so clicks don't cause visual jumps.
+      // Only when the user is actively filtering do we float selected
+      // chips to the top — otherwise they'd scroll out of view as they
+      // type queries that don't match their picks.
+      if (q) {
+        matches.sort((a, b) => {
+          const sa = selectedProjects.has(a.id) ? 0 : 1;
+          const sb = selectedProjects.has(b.id) ? 0 : 1;
+          if (sa !== sb) return sa - sb;
+          return a.name.localeCompare(b.name);
+        });
+      } else {
+        matches.sort((a, b) => a.name.localeCompare(b.name));
+      }
+      for (const p of matches) {
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'lib-project-chip';
+        if (selectedProjects.has(p.id)) chip.classList.add('selected');
+        chip.textContent = p.name;
+        chip.title = p.id;
+        chip.addEventListener('click', () => {
+          if (selectedProjects.has(p.id)) selectedProjects.delete(p.id);
+          else selectedProjects.add(p.id);
+          applyProjectFilter();
+        });
+        projectList.appendChild(chip);
+      }
+    }
+    const total = allProjects.length;
+    const sel = selectedProjects.size;
+    projectCount.textContent = sel
+      ? `${sel} selected · ${total} projects total`
+      : `${total} projects — click to select`;
+  }
+
+  projectSearch.addEventListener('input', applyProjectFilter);
+
+  function renderList(docs) {
+    while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+    if (!docs.length) {
+      const e = document.createElement('div');
+      e.className = 'lib-empty';
+      e.textContent = 'no documents yet';
+      listEl.appendChild(e);
+      return;
+    }
+    for (const d of docs) {
+      const row = document.createElement('div');
+      row.className = 'lib-row';
+
+      const date = document.createElement('div');
+      date.className = 'lib-date';
+      date.textContent = d.added_date || '';
+      row.appendChild(date);
+
+      const middle = document.createElement('div');
+      const title = document.createElement('div');
+      title.className = 'lib-title';
+      title.textContent = d.title || d.filename || d.id;
+      middle.appendChild(title);
+
+      const meta = document.createElement('div');
+      meta.className = 'lib-meta';
+      const parts = [];
+      if (d.filename && d.filename !== d.title) parts.push(d.filename);
+      if (d.projects && d.projects.length) parts.push('projects: ' + d.projects.join(', '));
+      if (d.tags && d.tags.length) parts.push('tags: ' + d.tags.join(', '));
+      parts.push(d.chars.toLocaleString() + ' chars');
+      meta.textContent = parts.join(' · ');
+      middle.appendChild(meta);
+      row.appendChild(middle);
+
+      const actions = document.createElement('div');
+      actions.className = 'lib-actions-cell';
+
+      const ed = document.createElement('button');
+      ed.type = 'button';
+      ed.className = 'lib-edit';
+      ed.textContent = 'Edit';
+      ed.addEventListener('click', () => startEdit(d.id));
+      actions.appendChild(ed);
+
+      const rm = document.createElement('button');
+      rm.type = 'button';
+      rm.className = 'lib-remove';
+      rm.textContent = 'Remove';
+      rm.addEventListener('click', () => removeDoc(d.id, d.title || d.filename || d.id));
+      actions.appendChild(rm);
+
+      row.appendChild(actions);
+      listEl.appendChild(row);
+    }
+  }
+
+  function startEdit(id) {
+    const doc = lastDocs.find(d => d.id === id);
+    if (!doc) { setStatus('doc not found in cached list — refreshing', 'error'); refresh(); return; }
+    editingId = id;
+    form.classList.add('editing');
+    formTitle.textContent = `Editing: ${doc.title || doc.filename || doc.id}`;
+    document.getElementById('lib-submit').textContent = 'Save changes';
+    // Pre-fill form fields from the cached doc row.
+    titleInput.value = doc.title || '';
+    tagsInput.value = (doc.tags || []).join(', ');
+    // Projects chips — sync the Set, then re-render so the paint matches.
+    selectedProjects.clear();
+    for (const pid of (doc.projects || [])) selectedProjects.add(pid);
+    projectSearch.value = '';
+    applyProjectFilter();
+    noteInput.value = doc.note || '';
+    setStatus('editing — cancel to return to Add', '');
+  }
+
+  function exitEdit() {
+    editingId = null;
+    form.classList.remove('editing');
+    formTitle.textContent = '';
+    document.getElementById('lib-submit').textContent = 'Add';
+    form.reset();  // clears inputs, triggers the reset handler to tidy state
+  }
+
+  if (cancelEditBtn) cancelEditBtn.addEventListener('click', exitEdit);
+
+  async function removeDoc(id, label) {
+    if (!confirm(`Remove "${label}"? This can't be undone. Narrations that referenced it will regenerate on the next cycle.`)) return;
+    setStatus('removing ' + id + '...');
+    try {
+      const r = await fetch('/api/docs/' + encodeURIComponent(id), {method: 'DELETE'});
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || 'HTTP ' + r.status);
+      setStatus('removed', 'ok');
+      refresh();
+    } catch (e) {
+      setStatus('error: ' + e.message, 'error');
+    }
+  }
+
+  // File picker via click or drag. Synced to a single currentFile regardless
+  // of which path the user took.
+  drop.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files[0]) setFile(fileInput.files[0]);
+  });
+  drop.addEventListener('dragover', ev => {
+    ev.preventDefault(); drop.classList.add('drag-over');
+  });
+  drop.addEventListener('dragleave', () => drop.classList.remove('drag-over'));
+  drop.addEventListener('drop', ev => {
+    ev.preventDefault(); drop.classList.remove('drag-over');
+    if (ev.dataTransfer.files && ev.dataTransfer.files[0]) setFile(ev.dataTransfer.files[0]);
+  });
+  function setFile(f) {
+    currentFile = f;
+    fileName.textContent = f.name + '  (' + Math.round(f.size / 1024) + ' KB)';
+  }
+
+  form.addEventListener('reset', () => {
+    setTimeout(() => {
+      currentFile = null;
+      fileName.textContent = '';
+      selectedProjects.clear();
+      projectSearch.value = '';
+      applyProjectFilter();
+      setStatus('');
+    }, 0);
+  });
+
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    submitBtn.disabled = true;
+    try {
+      const projects = [...selectedProjects];
+      const tags = tagsInput.value.split(',')
+        .map(s => s.trim()).filter(Boolean);
+      if (editingId) {
+        // PATCH path — no file, just metadata. Summary regenerates
+        // server-side if title or note changed; the cascade picks it
+        // up on next pipeline cycle.
+        setStatus('saving changes…');
+        const r = await fetch('/api/docs/' + encodeURIComponent(editingId), {
+          method: 'PATCH',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            title: titleInput.value.trim(),
+            projects, tags,
+            note: noteInput.value.trim(),
+          }),
+        });
+        const body = await r.json();
+        if (!r.ok) throw new Error(body.error || 'HTTP ' + r.status);
+        setStatus('saved', 'ok');
+        exitEdit();
+        refresh();
+      } else {
+        if (!currentFile) { setStatus('pick a file first', 'error'); return; }
+        setStatus('reading file…');
+        const b64 = await readAsBase64(currentFile);
+        setStatus('uploading + summarizing… this can take ~15 seconds');
+        const r = await fetch('/api/docs', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            filename: currentFile.name,
+            content_base64: b64,
+            title: titleInput.value.trim(),
+            projects, tags,
+            note: noteInput.value.trim(),
+          }),
+        });
+        const body = await r.json();
+        if (!r.ok) throw new Error(body.error || 'HTTP ' + r.status);
+        setStatus('added ' + body.id, 'ok');
+        form.reset();
+        refresh();
+      }
+    } catch (e) {
+      setStatus('error: ' + e.message, 'error');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  function readAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        // result is a data URL; strip the "data:*;base64," prefix.
+        const s = String(reader.result || '');
+        const comma = s.indexOf(',');
+        resolve(comma >= 0 ? s.slice(comma + 1) : s);
+      };
+      reader.onerror = () => reject(reader.error || new Error('file read failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+})();
+</script>
+"""
+
+
 CHAT_WIDGET = """
 <div id="chat-modal" role="dialog" aria-label="Chat with journal">
   <div id="chat-panel">
@@ -1356,674 +2037,167 @@ CHAT_WIDGET = """
 
 
 TTS_WIDGET = """
-<button class="tts-bubble" id="tts-bubble" title="Read aloud" aria-label="Read aloud">🔊</button>
-<div class="tts-panel" id="tts-panel" role="dialog" aria-label="Text to speech">
-  <h4>Read aloud</h4>
-  <label for="tts-voice">Voice</label>
-  <select id="tts-voice"></select>
-  <button id="tts-read-visible" type="button">Read what's on screen</button>
-  <button id="tts-stop" type="button" class="secondary">Stop</button>
-  <div class="tts-status" id="tts-status"></div>
+<!-- Audio plays pre-rendered WAVs from out/audio/. The browser-side
+     vits-web fallback was removed: piper is now a hard pip dependency,
+     so a WAV either exists (play it) or is pending (show the modal and
+     wait for the next pipeline cycle to produce it). One at a time -
+     starting a new play stops whatever was playing. -->
+<div id="tts-not-ready" role="dialog" aria-labelledby="tts-nr-title" aria-hidden="true">
+  <div class="tts-nr-card">
+    <h3 id="tts-nr-title">Audio still being generated</h3>
+    <p>Pre-rendered audio for this entry isn’t ready yet. The journal
+       synthesises WAVs as part of each pipeline cycle — it’ll be
+       available on the next refresh, usually within a few minutes.</p>
+    <button id="tts-nr-close" type="button">Got it</button>
+  </div>
 </div>
-<script type="module">
-// VITS-web TTS — runs fully in-browser via ONNX/WASM. Model files are
-// fetched from HuggingFace on first play and cached in OPFS by the library.
-const VOICES = [
-  {id: "en_US-libritts-high",        label: "LibriTTS (high) — default"},
-  {id: "en_US-libritts_r-medium",    label: "LibriTTS-R (medium)"},
-  {id: "en_US-hfc_female-medium",    label: "HFC female"},
-  {id: "en_US-hfc_male-medium",      label: "HFC male"},
-  {id: "en_US-amy-medium",           label: "Amy"},
-  {id: "en_US-ryan-high",            label: "Ryan (high)"},
-  {id: "en_US-lessac-high",          label: "Lessac (high)"},
-  {id: "en_GB-alan-medium",          label: "Alan UK"},
-  {id: "en_GB-jenny_dioco-medium",   label: "Jenny UK"},
-];
-const DEFAULT_VOICE = "en_US-libritts-high";
-const LS_KEY = "claudejournal.tts.voice";
+<script>
+(function() {
+  // Shared state so that clicking a second play button stops the first.
+  const state = { audio: null, button: null };
 
-const state = {
-  tts: null,        // lazy-loaded vits-web module
-  audio: null,      // current HTMLAudioElement
-  queue: [],        // pending {text, button}
-  current: null,    // current {text, button}
-  voice: DEFAULT_VOICE,
-  stopToken: 0,
-  audioGen: 0,
-  paused: false,
-  pendingPause: false, // set by restartSession when user was paused — honored after play()
-  session: null,       // snapshot of the last fresh enqueue — lets Restart replay
-  sourceButton: null,  // the .tts-play that started the current session (or null for "read visible")
-  trackerTeardown: null,
-};
-// Migrate: if stored voice isn't in our list, fall back to default.
-const _saved = localStorage.getItem(LS_KEY);
-if (_saved && VOICES.some(v => v.id === _saved)) state.voice = _saved;
-else localStorage.setItem(LS_KEY, DEFAULT_VOICE);
-
-const $status  = document.getElementById("tts-status");
-const $voice   = document.getElementById("tts-voice");
-const $bubble  = document.getElementById("tts-bubble");
-const $panel   = document.getElementById("tts-panel");
-// The big bubble stays a speaker icon. Per-entry ▶ buttons morph into
-// pause/resume, and grow an inline ↻ restart sibling while active.
-function setBubbleIcon() {
-  const src = state.sourceButton;
-  // Clean non-source buttons
-  document.querySelectorAll(".tts-play").forEach(btn => {
-    if (btn !== src) {
-      btn.textContent = "▶";
-      btn.classList.remove("paused", "playing");
-      btn.title = "Read this entry";
-      // Remove any stale restart siblings
-      const sib = btn.nextElementSibling;
-      if (sib && sib.classList.contains("tts-restart-inline")) sib.remove();
-    }
-  });
-  if (!src) return;
-  if (state.paused) { src.textContent = "▶"; src.title = "Resume"; src.classList.add("paused"); src.classList.remove("playing"); }
-  else              { src.textContent = "⏸"; src.title = "Pause";  src.classList.remove("paused"); src.classList.add("playing"); }
-  // Ensure an inline restart button sits next to the source button
-  let restart = src.nextElementSibling;
-  if (!restart || !restart.classList.contains("tts-restart-inline")) {
-    restart = document.createElement("button");
-    restart.type = "button";
-    restart.className = "tts-restart-inline";
-    restart.title = "Restart from beginning";
-    restart.setAttribute("aria-label", "Restart");
-    restart.textContent = "↻";
-    restart.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); restartSession(); });
-    src.insertAdjacentElement("afterend", restart);
+  function resetButton(btn) {
+    if (!btn) return;
+    btn.classList.remove("playing", "paused", "loading");
+    btn.textContent = "▶";
+    btn.title = "Read aloud";
   }
-}
-
-// Populate voice picker
-for (const v of VOICES) {
-  const opt = document.createElement("option");
-  opt.value = v.id; opt.textContent = v.label;
-  if (v.id === state.voice) opt.selected = true;
-  $voice.appendChild(opt);
-}
-// Surface environment issues up front — vits-web needs cross-origin
-// isolation for multi-threaded wasm + OPFS for model caching.
-(function envCheck() {
-  const problems = [];
-  if (!window.crossOriginIsolated) problems.push("page is not cross-origin isolated (COOP/COEP missing) — restart 'claudejournal serve'");
-  if (!window.isSecureContext) problems.push("not a secure context (need https or localhost)");
-  if (!navigator.storage?.getDirectory) problems.push("OPFS unavailable in this browser");
-  if (problems.length) {
-    const msg = "TTS may not work: " + problems.join("; ");
-    console.warn("[TTS]", msg);
-    setTimeout(() => { if (!$status.textContent) setStatus(msg); }, 50);
+  function markPlaying(btn) {
+    if (!btn) return;
+    btn.classList.remove("paused", "loading");
+    btn.classList.add("playing");
+    btn.textContent = "⏸";
+    btn.title = "Pause";
   }
-})();
-
-$voice.addEventListener("change", () => {
-  state.voice = $voice.value;
-  localStorage.setItem(LS_KEY, state.voice);
-  setStatus("Voice: " + state.voice);
-});
-
-function setStatus(msg) { $status.textContent = msg || ""; }
-
-function fmtTime(sec) {
-  if (!isFinite(sec) || sec < 0) sec = 0;
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-// Mount a scrub bar + sentence tracker for the currently-sourced entry.
-// Returns a teardown function.
-function mountTracker(sourceBtn, audio) {
-  if (!sourceBtn) return () => {};
-  const entry = sourceBtn.closest("article.entry, .week-break");
-  if (!entry) return () => {};
-  const body =
-    (entry.matches("article.entry") && entry.querySelector(".entry-body")) ||
-    (entry.classList.contains("week-break") && entry.nextElementSibling?.querySelector(".week-rollup")) ||
-    entry;
-
-  // ---- Sentence wrap (once) — for the highlight follower ----
-  const sentences = [];  // [{el, start, end}] in character offsets
-  if (body && !body.dataset.ttsWrapped) {
-    wrapSentences(body, sentences);
-    body.dataset.ttsWrapped = "1";
-    body._ttsSentences = sentences;
-  } else if (body && body._ttsSentences) {
-    sentences.push(...body._ttsSentences);
+  function markPaused(btn) {
+    if (!btn) return;
+    btn.classList.remove("playing", "loading");
+    btn.classList.add("paused");
+    btn.textContent = "▶";
+    btn.title = "Resume";
   }
-  const totalChars = sentences.length ? sentences[sentences.length - 1].end : 0;
 
-  // ---- Scrub bar ----
-  const wrap = document.createElement("div");
-  wrap.className = "tts-scrub";
-  wrap.innerHTML = `
-    <span class="tts-time tts-cur">0:00</span>
-    <input type="range" min="0" max="1000" value="0" step="1" aria-label="Scrub">
-    <span class="tts-time tts-dur">0:00</span>
-  `;
-  // Place scrub bar directly after the entry header
-  const header = entry.matches(".week-break") ? entry : entry.querySelector(".entry-head");
-  header.insertAdjacentElement("afterend", wrap);
-
-  const $cur = wrap.querySelector(".tts-cur");
-  const $dur = wrap.querySelector(".tts-dur");
-  const $rng = wrap.querySelector("input[type=range]");
-
-  // Scrub handling. Use `input` (fires for both drag and click-to-set), and
-  // additionally suppress `timeupdate`-driven updates while the range is
-  // focused so the thumb doesn't snap back under the user's mouse.
-  let seeking = false;
-  let seekTimer = 0;
-  const commitSeek = () => {
-    if (!isFinite(audio.duration) || audio.duration <= 0) return;
-    const target = (parseFloat($rng.value) / 1000) * audio.duration;
-    if (isFinite(target)) {
-      console.log("[TTS] scrub seek ->", target.toFixed(2), "s");
-      try { audio.currentTime = target; } catch (e) { console.error("[TTS] seek failed", e); }
+  function stopAll() {
+    if (state.audio) {
+      try { state.audio.pause(); } catch (e) {}
+      try { state.audio.src = ""; } catch (e) {}
     }
-  };
-  const onInput = () => {
-    seeking = true;
-    // Debounce: during fast drags, only commit every 60ms. Click-to-set
-    // fires once so it commits immediately after the timer.
-    clearTimeout(seekTimer);
-    seekTimer = setTimeout(() => { commitSeek(); seeking = false; }, 60);
-  };
-  const onPointerDown = () => { seeking = true; };
-  const onPointerUp = () => {
-    clearTimeout(seekTimer);
-    commitSeek();
-    seeking = false;
-  };
-  $rng.addEventListener("input", onInput);
-  $rng.addEventListener("pointerdown", onPointerDown);
-  $rng.addEventListener("pointerup", onPointerUp);
-  // Don't let clicks on the scrub area bubble up to anything that might
-  // restart playback.
-  wrap.addEventListener("click", (ev) => ev.stopPropagation());
-
-  let activeIdx = -1;
-  const clearActive = () => {
-    if (activeIdx >= 0 && sentences[activeIdx]) sentences[activeIdx].el.classList.remove("tts-active");
-    activeIdx = -1;
-  };
-  const onTime = () => {
-    const d = audio.duration;
-    if (isFinite(d) && d > 0) {
-      if (!seeking) $rng.value = String(Math.round((audio.currentTime / d) * 1000));
-      $cur.textContent = fmtTime(audio.currentTime);
-      $dur.textContent = fmtTime(d);
-      if (totalChars > 0) {
-        const charPos = (audio.currentTime / d) * totalChars;
-        let idx = -1;
-        for (let i = 0; i < sentences.length; i++) {
-          if (charPos >= sentences[i].start && charPos < sentences[i].end) { idx = i; break; }
-        }
-        if (idx !== activeIdx) {
-          clearActive();
-          activeIdx = idx;
-          if (idx >= 0) sentences[idx].el.classList.add("tts-active");
-        }
-      }
-    }
-  };
-  const onMeta = () => { if (isFinite(audio.duration)) $dur.textContent = fmtTime(audio.duration); };
-  audio.addEventListener("timeupdate", onTime);
-  audio.addEventListener("loadedmetadata", onMeta);
-
-  return () => {
-    clearTimeout(seekTimer);
-    audio.removeEventListener("timeupdate", onTime);
-    audio.removeEventListener("loadedmetadata", onMeta);
-    clearActive();
-    wrap.remove();
-  };
-}
-
-// Wrap each sentence in an entry body in a <span.tts-sentence>. Tracks
-// character offsets (with punctuation, spacing) so we can map audio time
-// to a sentence by proportional char position — good enough for Piper.
-function wrapSentences(root, out) {
-  // Collect text nodes in DFS order (skip nested inspect panels / buttons)
-  const skip = new Set(["BUTTON", "SCRIPT", "STYLE"]);
-  const texts = [];
-  const walk = (n) => {
-    if (!n) return;
-    if (n.nodeType === 3) { texts.push(n); return; }
-    if (n.nodeType !== 1) return;
-    if (skip.has(n.tagName) || n.classList.contains("inspect-panel") ||
-        n.classList.contains("inspect-chip") || n.classList.contains("meta")) return;
-    for (const c of [...n.childNodes]) walk(c);
-  };
-  walk(root);
-  if (!texts.length) return;
-  // Sentence split that keeps the punctuation attached.
-  const sentRx = /[^.!?\\n]+[.!?]+[\\s"')\\]]*|[^.!?\\n]+$/g;
-  let charOffset = 0;
-  for (const tn of texts) {
-    const raw = tn.nodeValue;
-    if (!raw) continue;
-    const frag = document.createDocumentFragment();
-    let m;
-    sentRx.lastIndex = 0;
-    let consumed = 0;
-    while ((m = sentRx.exec(raw)) !== null) {
-      // Leading whitespace between matches
-      if (m.index > consumed) {
-        frag.appendChild(document.createTextNode(raw.slice(consumed, m.index)));
-        charOffset += (m.index - consumed);
-      }
-      const span = document.createElement("span");
-      span.className = "tts-sentence";
-      span.textContent = m[0];
-      const start = charOffset;
-      charOffset += m[0].length;
-      const end = charOffset;
-      out.push({ el: span, start, end });
-      frag.appendChild(span);
-      consumed = m.index + m[0].length;
-    }
-    if (consumed < raw.length) {
-      frag.appendChild(document.createTextNode(raw.slice(consumed)));
-      charOffset += (raw.length - consumed);
-    }
-    tn.parentNode.replaceChild(frag, tn);
-  }
-}
-
-// Split into sentence-sized chunks so one bad token can't kill a whole
-// entry and so playback starts sooner.
-// Piper's phonemizer + ONNX session can comfortably synthesize long runs
-// in one shot (the vits-web demo uses ~3000 chars). Larger chunks = fewer
-// gaps. We still chunk for lookahead + error isolation.
-function splitForTTS(text, maxLen = 2800) {
-  const sentences = text.match(/[^.!?\\n]+[.!?]+|[^.!?\\n]+$/g) || [text];
-  const out = [];
-  let buf = "";
-  for (const s of sentences) {
-    const sp = s.trim();
-    if (!sp) continue;
-    if ((buf + " " + sp).trim().length > maxLen) {
-      if (buf) out.push(buf.trim());
-      buf = sp;
-    } else {
-      buf = (buf ? buf + " " : "") + sp;
-    }
-  }
-  if (buf.trim()) out.push(buf.trim());
-  return out;
-}
-
-async function loadTTS() {
-  if (state.tts) return state.tts;
-  setStatus("Loading TTS engine…");
-  state.tts = await import("https://cdn.jsdelivr.net/npm/@diffusionstudio/vits-web@1.0.3/+esm");
-  return state.tts;
-}
-
-// Strip anchors like [2026-04-12], normalize unicode punctuation, and
-// force ASCII — the LibriTTS model's phoneme vocab rejects IDs produced
-// for exotic characters (curly quotes, em dashes, ellipsis, etc).
-function cleanText(el) {
-  const clone = el.cloneNode(true);
-  clone.querySelectorAll(".inspect-panel, .inspect-chip, .tts-play, button, .meta").forEach(n => n.remove());
-  let t = clone.textContent || "";
-  t = t.replace(/\\[\\d{4}-\\d{2}-\\d{2}\\]/g, "");
-  // Unicode punctuation → ASCII equivalents
-  t = t.normalize("NFKD");
-  t = t.replace(/[\\u2018\\u2019\\u201A\\u201B\\u2032]/g, "'");
-  t = t.replace(/[\\u201C\\u201D\\u201E\\u201F\\u2033]/g, '"');
-  t = t.replace(/[\\u2013\\u2014\\u2015]/g, "-");
-  t = t.replace(/[\\u2026]/g, "...");
-  t = t.replace(/[\\u00A0\\u2007\\u202F]/g, " ");
-  t = t.replace(/[\\u2022\\u00B7]/g, ",");
-  // Drop combining marks left by NFKD, then anything non-ASCII.
-  t = t.replace(/[\\u0300-\\u036f]/g, "");
-  t = t.replace(/[^\\x20-\\x7e\\n]/g, " ");
-  t = t.replace(/\\s+/g, " ").trim();
-  return t;
-}
-
-function setDownloadPct(pct) {
-  if (pct == null) {
-    $bubble.classList.remove("downloading");
-    $bubble.style.removeProperty("--tts-pct");
-    $bubble.removeAttribute("data-pct");
-    return;
-  }
-  const p = Math.max(0, Math.min(100, Math.round(pct)));
-  $bubble.classList.add("downloading");
-  $bubble.style.setProperty("--tts-pct", p + "%");
-  $bubble.setAttribute("data-pct", p + "%");
-}
-
-async function synth(text) {
-  const tts = await loadTTS();
-  setStatus("Synthesizing…");
-  const totals = new Map(); // url -> total bytes
-  const loaded = new Map(); // url -> bytes loaded
-  const onProgress = (ev) => {
-    if (!ev || !ev.url) return;
-    if (typeof ev.total === "number" && ev.total > 0) totals.set(ev.url, ev.total);
-    if (typeof ev.loaded === "number") loaded.set(ev.url, ev.loaded);
-    let t = 0, l = 0;
-    for (const v of totals.values()) t += v;
-    for (const [u, v] of loaded) l += Math.min(v, totals.get(u) || v);
-    if (t > 0) {
-      const pct = (l / t) * 100;
-      setDownloadPct(pct);
-      setStatus("Downloading voice… " + Math.round(pct) + "%");
-    }
-  };
-  let wav;
-  try {
-    wav = await tts.predict({ text, voiceId: state.voice }, onProgress);
-  } finally {
-    setDownloadPct(null);
-  }
-  return wav instanceof Blob ? wav : new Blob([wav], { type: "audio/wav" });
-}
-
-// We want seamless playback, so the next chunk starts synthesizing while
-// the current one plays. Each queued item carries a lazily-kicked-off
-// blobPromise. `primeAhead` ensures the next N items have started.
-const LOOKAHEAD = 2;  // prime this many chunks ahead so playback flows
-
-function stopAll({ keepSession = false, keepSource = false } = {}) {
-  console.log("[TTS] stopAll keepSession=", keepSession, "keepSource=", keepSource,
-              "hadAudio=", !!state.audio, "audioTime=", state.audio?.currentTime);
-  if (state.trackerTeardown) { try { state.trackerTeardown(); } catch {} state.trackerTeardown = null; }
-  state.stopToken++;  // invalidate in-flight synths
-  if (state.audio) {
-    // Detach listeners BEFORE we mutate src/pause — otherwise the async
-    // error/ended events those mutations trigger will fire our handlers
-    // and clobber freshly-rebuilt state (e.g., during Restart).
-    state.audio.onended = null;
-    state.audio.onerror = null;
-    try { state.audio.pause(); } catch {}
-    try { state.audio.removeAttribute("src"); state.audio.load(); } catch {}
+    resetButton(state.button);
     state.audio = null;
+    state.button = null;
   }
-  if (state.current?.button) state.current.button.classList.remove("playing", "loading");
-  for (const q of state.queue) q.button?.classList.remove("playing", "loading");
-  state.queue = []; state.current = null; state.paused = false;
-  if (!keepSession) state.session = null;
-  if (!keepSource) state.sourceButton = null;
-  $bubble.classList.remove("playing");
-  setBubbleIcon();
-  setStatus("");
-}
 
-function togglePause() {
-  if (!state.current || !state.audio) return;
-  if (state.paused) {
-    state.paused = false;
-    state.audio.play().catch(e => console.error("[TTS] resume failed", e));
-    $bubble.classList.add("playing");
-    setStatus("Playing…");
-  } else {
-    state.paused = true;
-    state.audio.pause();
-    $bubble.classList.remove("playing");
-    setStatus("Paused");
+  function showNotReady() {
+    const m = document.getElementById("tts-not-ready");
+    if (m) m.classList.add("open");
   }
-  setBubbleIcon();
-}
 
-function restartSession() {
-  console.log("[TTS] restartSession session?=", !!state.session, "chunks=", state.session?.length,
-              "paused=", state.paused);
-  if (!state.session) return;
-  const wasPaused = state.paused;
-  // Fast path — a single live clip: just rewind in place. Preserves the
-  // paused/playing state exactly (if paused, stays paused at 0; if playing,
-  // continues playing from 0).
-  if (state.audio && state.session.length === 1 && state.queue.length === 0) {
-    try { state.audio.currentTime = 0; } catch {}
-    setStatus(wasPaused ? "Paused" : "Playing…");
-    return;
-  }
-  // Slow path — multi-chunk sessions: rebuild the queue from the session
-  // snapshot, then honor wasPaused after playback starts.
-  const snapshot = state.session.map(it => ({
-    text: it.text, button: it.button, blobUrl: it.blobUrl,
-  }));
-  const src = state.sourceButton;
-  stopAll({ keepSession: true, keepSource: true });
-  state.sourceButton = src;
-  state.session = snapshot.map(it => ({ ...it }));
-  state.pendingPause = wasPaused;
-  for (const it of snapshot) if (it.button) it.button.classList.add("loading");
-  state.queue.push(...snapshot);
-  playNext();
-}
-
-function primeAhead() {
-  const n = Math.min(LOOKAHEAD, state.queue.length);
-  for (let i = 0; i < n; i++) {
-    const item = state.queue[i];
-    if (item.blobPromise) continue;
-    if (item.blobUrl) continue;  // static URL — no synth needed
-    const token = state.stopToken;
-    item.blobPromise = (async () => {
-      const blob = await synth(item.text);
-      if (token !== state.stopToken) throw new Error("cancelled");
-      return blob;
-    })();
-    // Swallow unhandled rejections; playNext will see the rejection when it awaits.
-    item.blobPromise.catch(() => {});
-  }
-}
-
-async function playNext() {
-  if (!state.queue.length) { state.current = null; $bubble.classList.remove("playing"); setStatus(""); return; }
-  // Make sure the head (and the one after it, for seamless flow) is synthesizing.
-  primeAhead();
-  state.current = state.queue.shift();
-  const { text, button, blobPromise } = state.current;
-  if (button) { button.classList.remove("loading"); button.classList.add("playing"); }
-  $bubble.classList.add("playing");
-  setBubbleIcon();
-  // Kick off lookahead for the *new* head of the queue now that we shifted.
-  primeAhead();
-  const token = state.stopToken;
-  try {
-    let url, revoke = false;
-    if (state.current.blobUrl) {
-      url = state.current.blobUrl;
-    } else {
-      const blob = await blobPromise;
-      if (token !== state.stopToken) return;
-      url = URL.createObjectURL(blob);
-      revoke = true;
-    }
-    const audio = new Audio(url);
-    audio.preload = "auto";
-    // Defensive: guarantee we start at the top of this clip. A fresh Audio
-    // element is already at 0, but if ANYTHING upstream reuses an element
-    // or seeks, this prevents mystery resume-points.
-    try { audio.currentTime = 0; } catch {}
-    state.audio = audio;
-    const ttsSessionId = ++state.audioGen;
-    audio.dataset.ttsGen = String(ttsSessionId);
-    const _preview = state.current.blobUrl ? `[static] ${state.current.blobUrl}` : (text || "").slice(0, 60);
-    console.log("[TTS] play gen=", ttsSessionId, "preview=", _preview);
-    audio.onended = () => {
-      if (audio !== state.audio) { console.log("[TTS] stale onended gen=", ttsSessionId); return; }
-      if (revoke) URL.revokeObjectURL(url);
-      if (button) button.classList.remove("playing");
-      playNext();
-    };
-    audio.onerror = (e) => {
-      if (audio !== state.audio) { console.log("[TTS] stale onerror gen=", ttsSessionId); return; }
-      console.error("[TTS] audio error", e);
-      setStatus("Playback error"); stopAll();
-    };
-    setStatus("Playing…");
-    // Tear down any previous scrub/highlight UI before mounting a new one.
-    if (state.trackerTeardown) { try { state.trackerTeardown(); } catch {} state.trackerTeardown = null; }
-    state.trackerTeardown = mountTracker(state.sourceButton, audio);
-    try { audio.currentTime = 0; } catch {}
-    await audio.play();
-    // If Restart was invoked while we were paused, respect that: pause
-    // immediately so the user sees a clean rewind without audio.
-    if (state.pendingPause) {
-      state.pendingPause = false;
-      state.paused = true;
-      try { audio.pause(); } catch {}
-      $bubble.classList.remove("playing");
-      setStatus("Paused");
-      setBubbleIcon();
-    }
-  } catch (e) {
-    if (token !== state.stopToken) return;  // stopped — silent
-    console.error("[TTS]", e, "text=", (text || "").slice(0, 120));
-    setStatus("Skipped a chunk: " + (e.message || e).toString().slice(0, 120));
-    if (button) button.classList.remove("playing", "loading");
-    state.current = null;
-    setDownloadPct(null);
-    playNext();
-  }
-}
-
-function enqueue(items, { sourceButton = null } = {}) {
-  const fresh = !state.current && !state.queue.length;
-  if (fresh) {
-    state.session = items.map(it => ({ text: it.text, button: it.button, blobUrl: it.blobUrl }));
-    state.sourceButton = sourceButton;
-  }
-  for (const it of items) {
-    if (it.button) it.button.classList.add("loading");
-    state.queue.push(it);
-  }
-  if (fresh) { playNext(); setBubbleIcon(); }
-  else primeAhead();
-}
-
-function makePlayButton(label) {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "tts-play";
-  btn.title = label;
-  btn.setAttribute("aria-label", label);
-  btn.textContent = "▶";
-  return btn;
-}
-
-function wireTTSButton(btn, getSourceEl, opts = {}) {
-  btn.addEventListener("click", async (ev) => {
-    ev.preventDefault(); ev.stopPropagation();
-    if (state.sourceButton === btn && state.current) { togglePause(); return; }
-    // Prefer a pre-rendered WAV when available — works over plain HTTP
-    // (no SharedArrayBuffer / OPFS needed).
-    if (opts.audioUrl) {
+  function wirePlayButton(btn, audioUrl) {
+    btn.addEventListener("click", async (ev) => {
+      ev.preventDefault(); ev.stopPropagation();
+      // Clicking the currently-playing button toggles pause/resume.
+      if (state.button === btn && state.audio) {
+        if (state.audio.paused) { state.audio.play().catch(() => {}); markPlaying(btn); }
+        else { state.audio.pause(); markPaused(btn); }
+        return;
+      }
+      // Otherwise: stop whatever else is playing, then try to play this one.
+      stopAll();
+      if (!audioUrl) { showNotReady(); return; }
+      btn.classList.add("loading");
       try {
-        const head = await fetch(opts.audioUrl, { method: "HEAD" });
-        if (head.ok) {
-          stopAll();
-          enqueue([{ blobUrl: opts.audioUrl, button: null }], { sourceButton: btn });
-          return;
-        }
-      } catch (e) { /* fall through to live synth */ }
-    }
-    const src = getSourceEl();
-    if (!src) return;
-    const text = cleanText(src);
-    if (!text) return;
-    stopAll();
-    const chunks = splitForTTS(text);
-    enqueue(chunks.map(c => ({ text: c, button: null })), { sourceButton: btn });
-  });
-}
-
-// Pre-rendered audio lives at <audio_base>/daily-<id>.wav and weekly-<wk>.wav.
-// `__ANCHOR_BASE__` is the relative path to the site root from this page.
-const AUDIO_BASE = (window.__ANCHOR_BASE__ || "./") + "audio";
-
-function injectEntryButtons() {
-  document.querySelectorAll("article.entry .entry-head h2").forEach(h2 => {
-    if (h2.querySelector(".tts-play")) return;
-    const entry = h2.closest("article.entry");
-    const id = entry?.id;
-    const audioUrl = id ? `${AUDIO_BASE}/daily-${id}.wav` : null;
-    const btn = makePlayButton("Read this entry");
-    wireTTSButton(btn,
-      () => entry?.querySelector(".entry-body") || entry,
-      { audioUrl });
-    h2.appendChild(btn);
-  });
-  document.querySelectorAll(".week-break").forEach(wb => {
-    if (wb.querySelector(".tts-play")) return;
-    const wrap = wb.nextElementSibling;
-    if (!wrap || !wrap.classList.contains("week-rollup-wrap")) return;
-    if (!wrap.querySelector(".week-rollup")) return;
-    const week = wb.dataset.week;
-    const audioUrl = week ? `${AUDIO_BASE}/weekly-${week}.wav` : null;
-    const btn = makePlayButton("Read this weekly rollup");
-    wireTTSButton(btn,
-      () => wrap.querySelector(".week-rollup") || wrap,
-      { audioUrl });
-    wb.appendChild(btn);
-  });
-  document.querySelectorAll(".month-break").forEach(mb => {
-    if (mb.querySelector(".tts-play")) return;
-    const wrap = mb.nextElementSibling;
-    if (!wrap || !wrap.classList.contains("month-rollup-wrap")) return;
-    if (!wrap.querySelector(".month-rollup")) return;
-    const ym = mb.dataset.month;
-    const audioUrl = ym ? `${AUDIO_BASE}/monthly-${ym}.wav` : null;
-    const btn = makePlayButton("Read this monthly retrospective");
-    wireTTSButton(btn,
-      () => wrap.querySelector(".month-rollup") || wrap,
-      { audioUrl });
-    mb.appendChild(btn);
-  });
-}
-
-// Big speaker bubble always opens the voice/options panel.
-$bubble.addEventListener("click", (ev) => {
-  ev.stopPropagation();
-  $panel.classList.toggle("open");
-});
-
-document.addEventListener("click", (ev) => {
-  if (!$panel.contains(ev.target) && ev.target !== $bubble) $panel.classList.remove("open");
-});
-document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape" && state.current) stopAll();
-});
-
-document.getElementById("tts-stop").addEventListener("click", () => stopAll());
-document.getElementById("tts-read-visible").addEventListener("click", () => {
-  const vh = window.innerHeight;
-  const entries = [...document.querySelectorAll("article.entry, .week-rollup, .entry-body, main p")];
-  const visible = entries.filter(el => {
-    const r = el.getBoundingClientRect();
-    return r.bottom > 0 && r.top < vh && r.height > 0;
-  });
-  // Prefer full entries when visible; else fall back to paragraphs.
-  const targets = visible.filter(el => el.matches("article.entry, .week-rollup"));
-  const pool = targets.length ? targets : visible;
-  const items = [];
-  for (const el of pool) {
-    const t = cleanText(el.querySelector(".entry-body") || el);
-    if (!t) continue;
-    for (const c of splitForTTS(t)) items.push({ text: c, button: null });
+        const head = await fetch(audioUrl, { method: "HEAD" });
+        if (!head.ok) { btn.classList.remove("loading"); showNotReady(); return; }
+      } catch (e) {
+        btn.classList.remove("loading"); showNotReady(); return;
+      }
+      const audio = new Audio(audioUrl);
+      audio.addEventListener("ended", () => {
+        if (state.button === btn) { resetButton(btn); state.audio = null; state.button = null; }
+      });
+      audio.addEventListener("error", () => {
+        if (state.button === btn) { resetButton(btn); state.audio = null; state.button = null; }
+        showNotReady();
+      });
+      state.audio = audio;
+      state.button = btn;
+      try {
+        await audio.play();
+        markPlaying(btn);
+      } catch (e) {
+        btn.classList.remove("loading");
+        showNotReady();
+      }
+    });
   }
-  if (!items.length) { setStatus("Nothing visible to read."); return; }
-  stopAll();
-  enqueue(items);
-  $panel.classList.remove("open");
-});
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", injectEntryButtons);
-} else {
-  injectEntryButtons();
-}
-// Re-inject when new entries appear (filter/search reveals, dynamic loads)
-new MutationObserver(injectEntryButtons).observe(document.body, { childList: true, subtree: true });
+  function makePlayButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tts-play";
+    b.textContent = "▶";
+    b.title = "Read aloud";
+    b.setAttribute("aria-label", "Read aloud");
+    return b;
+  }
+
+  const AUDIO_BASE = (window.__ANCHOR_BASE__ || "./") + "audio";
+
+  function injectEntryButtons() {
+    // Dailies — anchor-id is YYYY-MM-DD, audio is daily-<id>.wav.
+    document.querySelectorAll("article.entry:not(.doc-entry) .entry-head h2").forEach(h2 => {
+      if (h2.querySelector(".tts-play")) return;
+      const entry = h2.closest("article.entry");
+      const id = entry ? entry.id : null;
+      if (!id) return;
+      const btn = makePlayButton();
+      wirePlayButton(btn, `${AUDIO_BASE}/daily-${id}.wav`);
+      h2.appendChild(btn);
+    });
+    // Weekly rollups — data-week on the wrap element.
+    document.querySelectorAll(".week-rollup-wrap").forEach(wb => {
+      if (wb.querySelector(".tts-play")) return;
+      const week = wb.dataset.week;
+      if (!week) return;
+      const rollup = wb.querySelector(".week-rollup");
+      if (!rollup) return;
+      const btn = makePlayButton();
+      wirePlayButton(btn, `${AUDIO_BASE}/weekly-${week}.wav`);
+      rollup.prepend(btn);
+    });
+    // Monthly rollups — data-month on the wrap element.
+    document.querySelectorAll(".month-rollup-wrap").forEach(mb => {
+      if (mb.querySelector(".tts-play")) return;
+      const ym = mb.dataset.month;
+      if (!ym) return;
+      const rollup = mb.querySelector(".month-rollup");
+      if (!rollup) return;
+      const btn = makePlayButton();
+      wirePlayButton(btn, `${AUDIO_BASE}/monthly-${ym}.wav`);
+      rollup.prepend(btn);
+    });
+  }
+
+  // Modal dismiss — Got it button or clicking the backdrop.
+  document.addEventListener("click", (ev) => {
+    const m = document.getElementById("tts-not-ready");
+    if (!m || !m.classList.contains("open")) return;
+    if (ev.target.id === "tts-nr-close" || ev.target === m) m.classList.remove("open");
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Escape") return;
+    const m = document.getElementById("tts-not-ready");
+    if (m) m.classList.remove("open");
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", injectEntryButtons);
+  } else {
+    injectEntryButtons();
+  }
+  // Re-inject when new entries appear (filter reveal, dynamic loads).
+  new MutationObserver(injectEntryButtons).observe(document.body, { childList: true, subtree: true });
+})();
 </script>
 """
 
@@ -2043,12 +2217,13 @@ def layout(title: str, body: str, anchor_base: str = "./") -> str:
 </head>
 <body>
 <script>window.__ANCHOR_BASE__ = {html.escape(repr(anchor_base))};</script>
-{ASK_BUTTON}
+<div id="top-actions">{ASK_BUTTON}{LIBRARY_BUTTON}</div>
 <div class="wrap">{body}</div>
 {FILTER_WIDGET}
 {INSPECT_WIDGET}
 {REFRESH_WIDGET}
 {CHAT_WIDGET}
+{LIBRARY_WIDGET}
 {TTS_WIDGET}
 </body>
 </html>
@@ -2243,6 +2418,140 @@ def _iso_week_of(date: str) -> str:
         return ""
 
 
+def render_doc_feed_entry(doc: dict, summary: dict, anchor_base: str = "./") -> str:
+    """In-feed doc entry. Renders the same full content as the standalone
+    per-doc page — user asked the feed card to BE the summary, not a
+    teaser — and wraps it in an <article class="entry doc-entry"> shell
+    so the filter/search/view-chip machinery can treat it as a feed item.
+
+    The only intentional difference from the standalone page: no
+    back-to-journal crumb, and the title is a link to the standalone
+    page so the reader can jump to the excerpt + download view if they
+    want to dig further.
+    """
+    doc_id = doc.get("id", "")
+    added_date = doc.get("added_date", "")
+    projects = doc.get("_project_names") or []
+    tags_all = list(dict.fromkeys(
+        (doc.get("_tags_list") or []) + (summary.get("tags") or [])
+    ))
+    week_attr = _iso_week_of(added_date)
+    month_attr = added_date[:7] if len(added_date) >= 7 else ""
+    year_attr = added_date[:4] if len(added_date) >= 4 else ""
+    projects_attr = ",".join(projects)
+    page_body = render_document_page(doc, summary, anchor_base=anchor_base)
+    return (
+        f'<article class="entry doc-entry" data-view="library" '
+        f'data-projects="{esc(projects_attr)}" data-week="{esc(week_attr)}" '
+        f'data-month="{esc(month_attr)}" data-year="{esc(year_attr)}" '
+        f'data-tags="{esc(",".join(tags_all))}">'
+        f'{page_body}'
+        f'</article>'
+    )
+
+
+def render_document_page(doc: dict, summary: dict, anchor_base: str = "../") -> str:
+    """Full-page document view. doc is a row from the documents table;
+    summary is the parsed JSON from narrations.prose (scope='document').
+
+    Layout mirrors the daily/weekly/monthly standalone-page idiom so the
+    page feels at home in the journal. Everything needed to reference
+    this document lives here: summary, user note, tags, projects, a
+    collapsible excerpt of the source text, and a download link to the
+    original file (served via the API so the raw filesystem stays
+    off-limits). """
+    title = doc.get("title") or doc.get("original_filename") or doc.get("id", "document")
+    added_date = doc.get("added_date", "")
+    user_note = (doc.get("user_note") or "").strip()
+    project_names = doc.get("_project_names") or []
+    tags = doc.get("_tags_list") or []
+    excerpt = (doc.get("extracted_text") or "").strip()
+    ext = doc.get("ext") or ""
+
+    hook = (summary.get("hook") or "").strip()
+    takeaway = (summary.get("takeaway") or "").strip()
+    key_points = [k for k in (summary.get("key_points") or []) if isinstance(k, str)]
+    summary_tags = [t for t in (summary.get("tags") or []) if isinstance(t, str)]
+
+    meta_parts: list[str] = []
+    if added_date: meta_parts.append(f"added {esc(added_date)}")
+    if project_names: meta_parts.append("projects: " + esc(", ".join(project_names)))
+    all_tags = list(dict.fromkeys(tags + summary_tags))  # de-dupe, preserve order
+    if all_tags:
+        meta_parts.append("tags: " + " ".join(f"<code>{esc(t)}</code>" for t in all_tags))
+    meta_html = (
+        f'<div class="doc-meta">{" · ".join(meta_parts)}</div>'
+        if meta_parts else ""
+    )
+
+    hook_html = f'<p class="doc-hook">{esc(hook)}</p>' if hook else ""
+    takeaway_html = (
+        f'<div class="doc-section"><h3>Takeaway</h3>'
+        f'<p>{esc(takeaway)}</p></div>'
+        if takeaway else ""
+    )
+    points_html = ""
+    if key_points:
+        items = "".join(f"<li>{esc(p)}</li>" for p in key_points)
+        points_html = (
+            f'<div class="doc-section"><h3>Key points</h3>'
+            f'<ul>{items}</ul></div>'
+        )
+    note_html = ""
+    if user_note:
+        note_html = (
+            f'<div class="doc-section doc-note"><h3>My note</h3>'
+            f'<p>{esc(user_note)}</p></div>'
+        )
+    # Excerpt: show first ~6 KB, collapsed. Bigger than a daily entry but
+    # not a full doc dump — enough to skim / ctrl-F without loading
+    # megabytes of prose onto the page.
+    excerpt_html = ""
+    if excerpt:
+        head = excerpt[:6000]
+        truncated = len(excerpt) > 6000
+        paragraphs = [p.strip() for p in head.split("\n\n") if p.strip()]
+        para_html = "".join(f"<p>{esc(p)}</p>" for p in paragraphs) or f"<p>{esc(head)}</p>"
+        if truncated:
+            para_html += (
+                '<p class="doc-trunc">… truncated. '
+                f'<a href="/api/docs/{esc(doc["id"])}/file">Download the full file</a> '
+                'to read the rest.</p>'
+            )
+        excerpt_html = (
+            f'<details class="doc-section doc-excerpt"><summary>Extracted text '
+            f'<span class="doc-excerpt-hint">({len(excerpt):,} characters — first 6,000 shown)</span>'
+            f'</summary><div class="doc-excerpt-body">{para_html}</div></details>'
+        )
+    download_html = (
+        f'<p class="doc-download">'
+        f'<a href="/api/docs/{esc(doc["id"])}/file">'
+        f'Download original file</a>'
+        + (f' <span class="doc-ext">({esc(ext)})</span>' if ext else "")
+        + '</p>'
+    )
+
+    # Title is a link to the standalone doc page. No-op when this body
+    # is rendered *as* the standalone page (reloads current URL), but
+    # lights up when the same body is embedded in the main feed.
+    title_html = (
+        f'<h2><a href="{anchor_base}docs/{esc(doc.get("id",""))}.html" '
+        f'style="color:inherit;text-decoration:none;">{esc(title)}</a></h2>'
+    )
+    return (
+        f'<article class="doc-page">'
+        f'  {title_html}'
+        f'  {meta_html}'
+        f'  {hook_html}'
+        f'  {takeaway_html}'
+        f'  {points_html}'
+        f'  {note_html}'
+        f'  {download_html}'
+        f'  {excerpt_html}'
+        f'</article>'
+    )
+
+
 def render_interlude_block(interlude: dict | None) -> str:
     if not interlude or not interlude.get("prose"):
         return ""
@@ -2273,14 +2582,17 @@ def render_day_entry(date: str, narration: str, mood: str,
                      mood_label: str = "",
                      has_learning: bool = False,
                      tags: list[str] | None = None,
-                     narration_generated_at: str = "") -> str:
+                     narration_generated_at: str = "",
+                     docs_added: list[dict] | None = None,
+                     known_docs: list[tuple[str, str]] | None = None) -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed."""
     pretty = _pretty_date_safe(date)
+    known_docs = known_docs or []
     meta = _count_meta(counts_row, mood)
 
     if narration:
         paragraphs = "".join(
-            f"<p>{link_anchors(p.strip(), base_path=anchor_base)}</p>"
+            f"<p>{link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base)}</p>"
             for p in narration.split("\n\n") if p.strip()
         )
         body = f'<div class="entry-body">{paragraphs}</div>'
@@ -2318,10 +2630,12 @@ def render_day_entry(date: str, narration: str, mood: str,
     )
 
 
-def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./") -> str:
+def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./",
+                      known_docs: list[tuple[str, str]] | None = None) -> str:
+    known_docs = known_docs or []
     if rollup_prose:
         paragraphs = "".join(
-            f"<p>{link_anchors(p.strip(), base_path=anchor_base)}</p>"
+            f"<p>{link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base)}</p>"
             for p in rollup_prose.split("\n\n") if p.strip()
         )
         rollup_html = f'<div class="week-rollup">{paragraphs}</div>'
@@ -2339,15 +2653,17 @@ def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./")
     )
 
 
-def render_month_break(year_month: str, rollup_prose: str, anchor_base: str = "./") -> str:
+def render_month_break(year_month: str, rollup_prose: str, anchor_base: str = "./",
+                       known_docs: list[tuple[str, str]] | None = None) -> str:
     """Month divider + attached monthly retrospective, mirrors render_week_break."""
+    known_docs = known_docs or []
     try:
         pretty = datetime.strptime(year_month, "%Y-%m").strftime("%B %Y")
     except ValueError:
         pretty = year_month
     if rollup_prose:
         paragraphs = "".join(
-            f"<p>{link_anchors(p.strip(), base_path=anchor_base)}</p>"
+            f"<p>{link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base)}</p>"
             for p in rollup_prose.split("\n\n") if p.strip()
         )
         rollup_html = f'<div class="month-rollup">{paragraphs}</div>'

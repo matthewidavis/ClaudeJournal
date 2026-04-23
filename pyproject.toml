@@ -8,6 +8,15 @@ dependencies = [
     # no external binary deps, good enough for modern PDFs. Other doc
     # types (md, txt, html) are handled via stdlib.
     "pypdf>=5.0",
+    # Pre-renders narrations to WAV files. Without this, audio playback
+    # falls back to a "not ready yet" message since we removed the
+    # browser-side vits-web fallback. `audio.resolve_piper` finds the
+    # installed binary even when the per-user Scripts dir isn't on PATH.
+    "piper-tts>=1.4",
+    # MCP server for exposing the journal to other Claude Code sessions
+    # via `journal_search`/`journal_recent`/etc. Auto-registered with the
+    # `claude` CLI on `claudejournal serve`.
+    "mcp>=1.0",
 ]
 
 [project.scripts]

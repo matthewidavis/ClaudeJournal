@@ -61,9 +61,26 @@ class ProjectDir:
     sessions: list[SessionInputs]
 
 
+# Terminal segments that are usually *not* the distinctive name of a
+# project — common when repos are downloaded as zips from GitHub and
+# unpack into folders like `agenticptz-main/`. When a project id ends in
+# one of these, _display_name pulls in the segment before it so the
+# label carries the actual repo name.
+_GENERIC_TERMINAL_SEGMENTS = frozenset({
+    "main", "master", "src", "app", "dist", "build", "bin",
+})
+
+
 def _display_name(project_id: str) -> str:
     parts = [p for p in project_id.split("-") if p]
-    return parts[-1] if parts else project_id
+    if not parts:
+        return project_id
+    last = parts[-1]
+    # Attach the preceding segment when the terminal is a generic suffix
+    # that would otherwise collide across many projects.
+    if last.lower() in _GENERIC_TERMINAL_SEGMENTS and len(parts) >= 2:
+        return f"{parts[-2]}-{last}"
+    return last
 
 
 def _uuid_subdirs(proj_path: Path) -> list[Path]:
