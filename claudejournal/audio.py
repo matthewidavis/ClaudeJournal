@@ -134,6 +134,33 @@ def _normalize_text(text: str) -> str:
     return t
 
 
+def _document_spoken_text(title: str, summary: dict, user_note: str) -> str:
+    """Build a natural spoken rendering of a document summary. The stored
+    summary is a JSON object (hook / takeaway / key_points / tags); Piper
+    wants flowing prose. We string the fields together with connective
+    language instead of reading them as labeled sections — labels like
+    "Takeaway colon" sound robotic aloud."""
+    hook = (summary.get("hook") or "").strip()
+    takeaway = (summary.get("takeaway") or "").strip()
+    points = [p.strip() for p in (summary.get("key_points") or []) if isinstance(p, str) and p.strip()]
+    note = (user_note or "").strip()
+    parts: list[str] = []
+    parts.append(f"{title}.")
+    if note:
+        parts.append(f"Why I added this. {note}")
+    if hook:
+        parts.append(hook)
+    if takeaway:
+        parts.append(takeaway)
+    if points:
+        # Join key points with "Then," / "Also,"-style connectors so they
+        # flow better than a bare list. First point gets no prefix.
+        parts.append("Key points. " + " ".join(
+            (p if p.endswith((".", "!", "?")) else p + ".") for p in points
+        ))
+    return " ".join(parts)
+
+
 def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
                       verbose: bool = True) -> dict:
     """Walk daily + weekly narrations in the DB and render each to a WAV.
@@ -162,9 +189,9 @@ def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
     model_path = ensure_model(voice, models_dir)
 
     conn = connect(cfg.db_path)
-    # Sort key is the date for daily entries, the ISO-week 'YYYY-Www' for weekly.
-    # Both sort lexicographically into chronological order, so reverse=True
-    # gives newest-first — users hear recent content while older renders.
+    # Sort key is the date (daily/project_day/document/interlude) or ISO-week /
+    # YYYY-MM for rollups — all lexicographically chronological so reverse=True
+    # gives newest-first. Users hear recent content while older renders.
     rows: list[tuple[str, str, str, str]] = []  # (sortkey, base, kind, prose)
     for r in conn.execute(
         "SELECT date, prose FROM narrations WHERE scope='daily' AND prose IS NOT NULL AND prose != ''"
@@ -179,6 +206,29 @@ def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
     ):
         # Month key "YYYY-MM" — suffix z so it sorts after weekly/daily for same date
         rows.append((f"{r['key']}-ZZ", f"monthly-{r['key']}", "monthly", r["prose"]))
+    # Document summaries — the JSON that lives under narrations.scope='document'
+    # isn't readable prose; flatten it into a natural spoken form.
+    for r in conn.execute(
+        """SELECT d.id, d.title, d.added_date, d.user_note, n.prose AS summary_json
+           FROM documents d
+           JOIN narrations n ON n.scope='document' AND n.key = d.id
+           WHERE n.prose IS NOT NULL AND n.prose != ''"""
+    ):
+        try:
+            summary = json.loads(r["summary_json"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        spoken = _document_spoken_text(
+            r["title"] or r["id"], summary, r["user_note"] or ""
+        )
+        if spoken:
+            rows.append((r["added_date"] or "", f"doc-{r['id']}", "document", spoken))
+    # Interludes live in their own table (scope wasn't extended into
+    # narrations for them) but are also short readable prose.
+    for r in conn.execute(
+        "SELECT date, prose FROM interludes WHERE prose IS NOT NULL AND prose != ''"
+    ):
+        rows.append((r["date"], f"interlude-{r['date']}", "interlude", r["prose"]))
     conn.close()
     rows.sort(key=lambda x: x[0], reverse=True)
 

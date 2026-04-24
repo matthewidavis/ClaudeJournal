@@ -2145,6 +2145,11 @@ TTS_WIDGET = """
 
   function injectEntryButtons() {
     // Dailies — anchor-id is YYYY-MM-DD, audio is daily-<id>.wav.
+    // Skip doc entries (handled separately below) and skip anything
+    // that already has a button (idempotent for MutationObserver).
+    // Project-day narrations have no standalone render surface today —
+    // project filter just scopes the main index — so we don't need
+    // separate per-project-per-day audio buttons.
     document.querySelectorAll("article.entry:not(.doc-entry) .entry-head h2").forEach(h2 => {
       if (h2.querySelector(".tts-play")) return;
       const entry = h2.closest("article.entry");
@@ -2175,6 +2180,25 @@ TTS_WIDGET = """
       const btn = makePlayButton();
       wirePlayButton(btn, `${AUDIO_BASE}/monthly-${ym}.wav`);
       rollup.prepend(btn);
+    });
+    // Document entries — data-doc-id on the article. WAV is doc-<id>.wav.
+    document.querySelectorAll("article.entry.doc-entry").forEach(ae => {
+      const h2 = ae.querySelector(".entry-head h2");
+      if (!h2 || h2.querySelector(".tts-play")) return;
+      const docId = ae.dataset.docId;
+      if (!docId) return;
+      const btn = makePlayButton();
+      wirePlayButton(btn, `${AUDIO_BASE}/doc-${docId}.wav`);
+      h2.appendChild(btn);
+    });
+    // Interlude blocks — data-interlude-date on the wrapper.
+    document.querySelectorAll(".interlude[data-interlude-date]").forEach(il => {
+      if (il.querySelector(".tts-play")) return;
+      const d = il.dataset.interludeDate;
+      if (!d) return;
+      const btn = makePlayButton();
+      wirePlayButton(btn, `${AUDIO_BASE}/interlude-${d}.wav`);
+      il.prepend(btn);
     });
   }
 
@@ -2442,6 +2466,7 @@ def render_doc_feed_entry(doc: dict, summary: dict, anchor_base: str = "./") -> 
     page_body = render_document_page(doc, summary, anchor_base=anchor_base)
     return (
         f'<article class="entry doc-entry" data-view="library" '
+        f'data-doc-id="{esc(doc_id)}" '
         f'data-projects="{esc(projects_attr)}" data-week="{esc(week_attr)}" '
         f'data-month="{esc(month_attr)}" data-year="{esc(year_attr)}" '
         f'data-tags="{esc(",".join(tags_all))}">'
@@ -2567,7 +2592,13 @@ def render_interlude_block(interlude: dict | None) -> str:
         else:
             # For single short poems/haiku, preserve line breaks as <br>
             body = "<p>" + "<br>".join(esc(line) for line in prose.split("\n") if line.strip()) + "</p>"
-    return (f'<div class="interlude">'
+    # data-interlude-date lets the audio injector wire a play button
+    # pointing at interlude-<date>.wav. ASCII doodles have no good
+    # spoken rendering, so skip audio for those.
+    il_date = interlude.get("date", "")
+    data_attr = (f' data-interlude-date="{esc(il_date)}"'
+                 if il_date and form != "ascii_doodle" else "")
+    return (f'<div class="interlude"{data_attr}>'
             f'<span class="tag">a quiet day · {esc(form.replace("_", " "))}</span>'
             f'{body}</div>')
 
