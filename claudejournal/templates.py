@@ -2182,8 +2182,10 @@ TTS_WIDGET = """
       rollup.prepend(btn);
     });
     // Document entries — data-doc-id on the article. WAV is doc-<id>.wav.
+    // Doc entries use the shared doc-page body (not an .entry-head), so
+    // we target the doc-page's own <h2> instead.
     document.querySelectorAll("article.entry.doc-entry").forEach(ae => {
-      const h2 = ae.querySelector(".entry-head h2");
+      const h2 = ae.querySelector(".doc-page > h2") || ae.querySelector("h2");
       if (!h2 || h2.querySelector(".tts-play")) return;
       const docId = ae.dataset.docId;
       if (!docId) return;
