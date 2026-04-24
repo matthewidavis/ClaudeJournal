@@ -130,6 +130,44 @@ def link_doc_titles(html_text: str, doc_titles: list[tuple[str, str]],
     return html_text
 
 
+def link_topic_titles(html_text: str, topic_tags: list[tuple[str, str]],
+                      base_path: str = "./") -> str:
+    """Wrap recognized topic tag names with links to their topic pages.
+
+    `topic_tags` is a list of (tag_name, safe_slug) pairs. Input must already
+    be HTML-escaped (this function runs AFTER link_anchors() and
+    link_doc_titles()). Longest first so "machine-learning" beats "learning"
+    when both are present. Word-boundary guards prevent substring matches.
+
+    This is intentionally called AFTER link_doc_titles so doc titles take
+    priority over topic names when they share text (more specific wins).
+    """
+    if not topic_tags:
+        return html_text
+    # Sort descending by tag name length — prevents shorter tags winning
+    # the substring race when one is a prefix of another.
+    sorted_tags = sorted(topic_tags, key=lambda t: len(t[0]), reverse=True)
+    for tag_name, slug in sorted_tags:
+        if not tag_name or not tag_name.strip():
+            continue
+        escaped = html.escape(tag_name, quote=False)
+        pattern = r"(?<![\w-])" + re.escape(escaped) + r"(?![\w-])"
+        placeholder = f"\x00TOPIC{slug}\x00"
+        def _sub(m: re.Match, _ph=placeholder) -> str:
+            return _ph + m.group(0) + _ph
+        html_text = re.sub(pattern, _sub, html_text, flags=re.IGNORECASE)
+        open_tag = f'<a class="topic-link" href="{base_path}topics/{slug}.html">'
+        close_tag = "</a>"
+        parts = html_text.split(placeholder)
+        rebuilt = []
+        for i, part in enumerate(parts):
+            rebuilt.append(part)
+            if i < len(parts) - 1:
+                rebuilt.append(open_tag if i % 2 == 0 else close_tag)
+        html_text = "".join(rebuilt)
+    return html_text
+
+
 def detect_unanchored(prose: str) -> list[str]:
     """Return list of unanchored past-tense phrases — hallucination signals."""
     out: list[str] = []

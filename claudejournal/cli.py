@@ -110,6 +110,23 @@ def main(argv: list[str] | None = None) -> int:
     p_ask.add_argument("--model", default="sonnet")
     p_ask.add_argument("--k", type=int, default=8, help="Retrieval breadth")
 
+    p_topic = sub.add_parser("topic", help="Manage topic narration pages")
+    topic_sub = p_topic.add_subparsers(dest="topic_cmd", required=True)
+
+    p_topic_list = topic_sub.add_parser("list", help="List all qualifying tags with page status")
+    p_topic_list.add_argument("--json", action="store_true")
+
+    topic_sub.add_parser("list-pending", help="List tags that qualify but have no current page")
+
+    p_topic_sum = topic_sub.add_parser("summarize", help="Regenerate one or all topic pages")
+    p_topic_sum.add_argument("tag", nargs="?", default=None,
+                             help="Tag name (omit to run all with --all)")
+    p_topic_sum.add_argument("--all", action="store_true", help="Regenerate all qualifying tags")
+    p_topic_sum.add_argument("--force", action="store_true",
+                             help="Re-generate even if hash matches")
+    p_topic_sum.add_argument("--model", default=None,
+                             help="Claude model (default: config.topic_model)")
+
     p_doc = sub.add_parser("doc", help="Manage curated external documents")
     doc_sub = p_doc.add_subparsers(dest="doc_cmd", required=True)
 
@@ -724,6 +741,49 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print(f"[{len(result.hits)} sources: " +
                   ", ".join(f"{h.kind}@{h.date or '-'}" for h in result.hits) + "]")
+        return 0
+
+    if args.cmd == "topic":
+        from claudejournal import topics as topicsmod
+        from claudejournal.db import connect as _connect
+        import json as _json
+        conn = _connect(cfg.db_path)
+        try:
+            if args.topic_cmd == "list":
+                items = topicsmod.list_topics(conn, cfg.min_days_for_topic)
+                if args.json:
+                    print(_json.dumps(items, indent=2))
+                else:
+                    if not items:
+                        print("(no tags qualify yet — need >= %d days each)" % cfg.min_days_for_topic)
+                    else:
+                        print(f"{'tag':40s}  {'status':8s}  {'days':4s}  generated_at")
+                        for it in items:
+                            ga = (it["generated_at"] or "-")[:19]
+                            print(f"  {it['tag']:38s}  {it['status']:8s}  {it['days']:4d}  {ga}")
+                        print(f"\n{len(items)} qualifying tags")
+            elif args.topic_cmd == "list-pending":
+                pending = topicsmod.list_pending(conn, cfg.min_days_for_topic)
+                if not pending:
+                    print("(all qualifying tags have current pages)")
+                else:
+                    for t in pending:
+                        print(f"  {t}")
+                    print(f"\n{len(pending)} pending")
+            elif args.topic_cmd == "summarize":
+                model = args.model or cfg.topic_model
+                if args.all or args.tag is None:
+                    stats = topicsmod.run(cfg, all_=True, force=args.force,
+                                          model=model, verbose=True)
+                    print(f"done: {stats['generated']} generated, {stats['skipped']} skipped, "
+                          f"{stats['errors']} errors")
+                else:
+                    # Single tag — doesn't need to pass threshold check here
+                    s = topicsmod.summarize_topic(conn, args.tag.strip().lower(),
+                                                  model=model, force=args.force, verbose=True)
+                    print(f"done: {s['generated']} generated, {s['skipped']} skipped")
+        finally:
+            conn.close()
         return 0
 
     if args.cmd == "doc":

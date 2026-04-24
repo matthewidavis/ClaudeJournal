@@ -22,12 +22,14 @@ from claudejournal.db import connect
 from claudejournal.templates import (
     esc,
     layout,
+    render_arc_page,
     render_chat_page,
     render_day_entry,
     render_doc_feed_entry,
     render_document_page,
     render_feed,
     render_month_break,
+    render_topic_page,
     render_week_break,
 )
 
@@ -316,7 +318,8 @@ def _docs_by_date(conn: sqlite3.Connection,
 
 def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: str,
                        pid: str | None = None,
-                       tags_by_date: dict[str, list[str]] | None = None) -> list[str]:
+                       tags_by_date: dict[str, list[str]] | None = None,
+                       known_topics: list[tuple[str, str]] | None = None) -> list[str]:
     """Produce the feed entries + week/month breaks interleaved, newest first."""
     weekly = _weekly_rollups(conn)
     monthly = _monthly_rollups(conn)
@@ -328,6 +331,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
         for doc_list in docs_by_date.values()
         for doc in doc_list
     ]
+    known_topics = known_topics or []
     tags_by_date = tags_by_date or {}
     out: list[str] = []
     last_week: str | None = None
@@ -338,13 +342,15 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
         # Week break when week changes
         if week != last_week and last_week is not None:
             out.append(render_week_break(last_week, weekly.get(last_week, ""),
-                                         anchor_base, known_docs=known_docs))
+                                         anchor_base, known_docs=known_docs,
+                                         known_topics=known_topics))
         # Month break AFTER the week break (month is the bigger boundary —
         # visually it sits below the week break, so appears after in DOM order
         # given newest-first iteration).
         if month != last_month and last_month is not None:
             out.append(render_month_break(last_month, monthly.get(last_month, ""),
-                                          anchor_base, known_docs=known_docs))
+                                          anchor_base, known_docs=known_docs,
+                                          known_topics=known_topics))
         last_week = week
         last_month = month
         bundle = _load_day_bundle(conn, date, pid)
@@ -365,6 +371,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             narration_generated_at=bundle.get("narration_generated_at", ""),
             docs_added=docs_by_date.get(date, []),
             known_docs=known_docs,
+            known_topics=known_topics,
         ))
         # Doc entries for this date — emitted right after the day so they
         # cluster chronologically. The Library view chip keeps them visible
@@ -383,10 +390,10 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
                                                  anchor_base=anchor_base))
     if last_week and last_week in weekly:
         out.append(render_week_break(last_week, weekly[last_week], anchor_base,
-                                     known_docs=known_docs))
+                                     known_docs=known_docs, known_topics=known_topics))
     if last_month and last_month in monthly:
         out.append(render_month_break(last_month, monthly[last_month], anchor_base,
-                                      known_docs=known_docs))
+                                      known_docs=known_docs, known_topics=known_topics))
     return out
 
 
@@ -463,7 +470,35 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     tags_by_date, tag_counts = _tags_index(conn)
     tag_opts = [{"key": k, "label": k, "count": c} for k, c in tag_counts.most_common()]
 
-    entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None, tags_by_date=tags_by_date)
+    # Topic pages data for Overview mode.  Build slug map now so the JS gets
+    # the correct hrefs. Only tags with a generated prose page are included.
+    from claudejournal.topics import build_slug_map, tags_with_enough_coverage
+    _all_qualifying_tags = tags_with_enough_coverage(conn)
+    _slug_map_global = build_slug_map(_all_qualifying_tags)
+    _rendered_topic_tags = [
+        r["key"] for r in conn.execute(
+            "SELECT key FROM narrations WHERE scope='topic' AND prose IS NOT NULL AND prose != ''"
+        ).fetchall()
+    ]
+    topic_pages_list = _rendered_topic_tags  # tags with pages
+    topic_pages_map = {t: _slug_map_global.get(t, t) for t in _rendered_topic_tags}
+
+    # Arc pages data: projects with a project_arc narration (task 16 populates).
+    arc_pages_list = [
+        r["key"] for r in conn.execute(
+            "SELECT key FROM narrations WHERE scope='project_arc' AND prose IS NOT NULL AND prose != ''"
+        ).fetchall()
+    ]
+
+    # known_topics: (tag_name, slug) pairs for linkification in narration prose.
+    # Only include tags that have generated pages to avoid dead links.
+    known_topics_all: list[tuple[str, str]] = [
+        (tag, _slug_map_global.get(tag, tag)) for tag in _rendered_topic_tags
+    ]
+
+    entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
+                                 tags_by_date=tags_by_date,
+                                 known_topics=known_topics_all)
     body = render_feed(
         entries,
         site_title="ClaudeJournal",
@@ -475,6 +510,9 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         learnings=[{"key": "yes", "label": "Came clear"}, {"key": "no", "label": "In the fog"}],
         years=year_opts,
         tags=tag_opts,
+        topic_pages=topic_pages_list,
+        topic_pages_map=topic_pages_map,
+        arc_pages=arc_pages_list,
     )
     (out_dir / "index.html").write_text(layout("Home", body, anchor_base="./"), encoding="utf-8")
     stats["index"] = 1
@@ -511,7 +549,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     for wr in weekly_rows:
         iso_week, start, prose = wr["key"], wr["date"], wr["prose"]
         body_html = render_week_break(iso_week, prose, anchor_base="../",
-                                      known_docs=known_docs_all)
+                                      known_docs=known_docs_all,
+                                      known_topics=known_topics_all)
         body = (
             f'<header class="site-head">'
             f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
@@ -535,7 +574,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         except ValueError:
             pretty = ym
         body_html = render_month_break(ym, prose, anchor_base="../",
-                                       known_docs=known_docs_all)
+                                       known_docs=known_docs_all,
+                                       known_topics=known_topics_all)
         body = (
             f'<header class="site-head">'
             f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
@@ -605,6 +645,60 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             layout(pretty_title, body, anchor_base="../"), encoding="utf-8"
         )
         stats["docs"] += 1
+
+    # ---------- Topic wiki pages (out/topics/<slug>.html) ----------
+    (out_dir / "topics").mkdir(exist_ok=True)
+    topic_rows = conn.execute(
+        "SELECT key, prose, generated_at FROM narrations WHERE scope='topic' "
+        "AND prose IS NOT NULL AND prose != '' ORDER BY key ASC"
+    ).fetchall()
+    # Reuse slug map already built for the filter data above.
+    slug_map = _slug_map_global
+    # Reverse map for rendering: slug -> tag (for filenames we iterate topic rows)
+    stats["topics"] = 0
+    for tr in topic_rows:
+        tag = tr["key"]
+        prose = tr["prose"]
+        slug = slug_map.get(tag) or tag
+        gen_at = tr["generated_at"] or ""
+
+        # Collect dates and projects for this tag by scanning session_briefs
+        dates_set: set[str] = set()
+        projs_set: set[str] = set()
+        for r in conn.execute(
+            """SELECT b.date, b.brief_json, p.display_name AS pname
+               FROM session_briefs b JOIN projects p ON p.id = b.project_id
+               WHERE b.date IS NOT NULL AND b.date != ''"""
+        ).fetchall():
+            try:
+                brief = json.loads(r["brief_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            tags_in_brief = [t.strip().lower() for t in (brief.get("tags") or [])
+                             if isinstance(t, str)]
+            if tag in tags_in_brief:
+                dates_set.add(r["date"])
+                projs_set.add(r["pname"])
+
+        page_html = render_topic_page(
+            tag, prose, anchor_base="../",
+            dates=sorted(dates_set),
+            projects=sorted(projs_set),
+            known_docs=known_docs_all,
+            topic_slugs=slug_map,
+            slug=slug,
+            generated_at=gen_at,
+        )
+        body = (
+            f'<header class="site-head">'
+            f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
+            f'</header>{page_html}<footer>claudejournal</footer>'
+        )
+        (out_dir / "topics" / f"{slug}.html").write_text(
+            layout(tag.replace("-", " ").title(), body, anchor_base="../"),
+            encoding="utf-8",
+        )
+        stats["topics"] += 1
 
     # ---------- Chat deep-link page (main chat is the floating bubble) ----------
     (out_dir / "chat.html").write_text(

@@ -168,6 +168,19 @@ def reindex(conn: sqlite3.Connection, claude_home: Path, verbose: bool = False) 
         )
         stats["documents"] += 1
 
+    # Topic narrations — wiki-style synthesis pages. Prose is human-readable.
+    stats["topics"] = 0
+    for r in conn.execute(
+        "SELECT key, prose FROM narrations WHERE scope='topic' "
+        "AND prose IS NOT NULL AND prose != ''"
+    ).fetchall():
+        conn.execute(
+            "INSERT INTO rag_chunks (kind, date, project_id, project_name, title, body) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("topic", "", "", "", f"Topic: {r['key']}", r["prose"]),
+        )
+        stats["topics"] += 1
+
     # Project memory files
     for r in conn.execute(
         "SELECT id, display_name FROM projects"

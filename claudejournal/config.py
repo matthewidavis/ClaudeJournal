@@ -29,6 +29,12 @@ class Config:
     # via PATH (shutil.which). Useful on Windows where `pip install piper-tts`
     # drops piper.exe in a per-user Scripts dir that isn't on PATH by default.
     piper_binary: str | None = None
+    # Topic pages: minimum distinct days a tag must appear on to qualify.
+    min_days_for_topic: int = 3
+    # Model for topic page narrations (many pages — haiku keeps cost bounded).
+    topic_model: str = "haiku"
+    # Model for project arc narrations (fewer; richer retrospective voice).
+    arc_model: str = "sonnet"
 
 
 def default_claude_home() -> Path:
@@ -69,4 +75,7 @@ def load(config_path: Path | None = None) -> Config:
         audio_enabled=data.get("audio_enabled", True),
         audio_voice=data.get("audio_voice", "en_US-libritts-high"),
         piper_binary=data.get("piper_binary"),
+        min_days_for_topic=data.get("min_days_for_topic", 3),
+        topic_model=data.get("topic_model", "haiku"),
+        arc_model=data.get("arc_model", "sonnet"),
     )

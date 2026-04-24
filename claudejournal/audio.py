@@ -229,6 +229,18 @@ def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
         "SELECT date, prose FROM interludes WHERE prose IS NOT NULL AND prose != ''"
     ):
         rows.append((r["date"], f"interlude-{r['date']}", "interlude", r["prose"]))
+    # Topic narrations — atemporal wiki pages, sorted alphabetically by tag.
+    # Slug derivation mirrors topics.py._safe_slug for filename consistency.
+    from claudejournal.topics import build_slug_map, tags_with_enough_coverage
+    _qualifying_tags = tags_with_enough_coverage(conn)
+    _topic_slug_map = build_slug_map(_qualifying_tags)
+    for r in conn.execute(
+        "SELECT key, prose FROM narrations WHERE scope='topic' "
+        "AND prose IS NOT NULL AND prose != '' ORDER BY key ASC"
+    ):
+        tag = r["key"]
+        slug = _topic_slug_map.get(tag) or tag
+        rows.append((f"topic-{tag}", f"topic-{slug}", "topic", r["prose"]))
     conn.close()
     rows.sort(key=lambda x: x[0], reverse=True)
 

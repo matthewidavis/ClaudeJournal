@@ -90,6 +90,17 @@ def run_all(cfg: Config, *,
     stats["doc_summary"] = doc_stats
     _tick("doc_summary", 1, 1, "done")
 
+    if verbose: print("[2c] topic-summaries")
+    _tick("topic_summary", 0, 1, "starting")
+    from claudejournal import topics as topicsmod
+    topic_stats = topicsmod.run(
+        cfg, all_=True, model=cfg.topic_model, force=force,
+        verbose=verbose,
+        progress=lambda d, t, l="": _tick("topic_summary", d, t, l),
+    )
+    stats["topic_summary"] = topic_stats
+    _tick("topic_summary", 1, 1, "done")
+
     if not skip_narration:
         if verbose: print("[3/5] narrate")
         _tick("narrate", 0, 1, "starting")

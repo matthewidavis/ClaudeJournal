@@ -5,7 +5,7 @@ import html
 from datetime import datetime
 from typing import Iterable
 
-from claudejournal.post_process import link_anchors, link_doc_titles
+from claudejournal.post_process import link_anchors, link_doc_titles, link_topic_titles
 
 
 CSS = """
@@ -440,6 +440,90 @@ a.doc-link {
   padding-bottom: 1px;
 }
 a.doc-link:hover { border-bottom-style: solid; }
+
+/* Topic title links — wherever narration prose uses a tag name that has a
+   topic page, it's wrapped in this class. Dashed underline distinguishes
+   from doc-link (dotted) so the two affordances are visually distinct. */
+a.topic-link {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dashed var(--accent-soft);
+  padding-bottom: 1px;
+}
+a.topic-link:hover { border-bottom-style: solid; }
+
+/* ── Per-topic wiki page ────────────────────────────────────────────── */
+.topic-page {
+  max-width: 720px; margin: 20px auto; padding: 22px 28px;
+  background: var(--paper); border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent-soft);
+  border-radius: 4px; box-shadow: var(--shadow);
+  font-size: 15px; line-height: 1.7;
+}
+.topic-page h2 { margin: 0 0 6px; font-size: 22px; font-weight: 500; }
+.topic-tag-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin-bottom: 14px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.topic-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 16px;
+}
+.topic-meta code {
+  background: var(--chip); padding: 1px 7px; border-radius: 10px;
+  font-size: 11px; margin-right: 2px;
+}
+.topic-body { margin: 0 0 18px; }
+.topic-body p { margin: 0 0 14px; }
+.topic-body p:last-child { margin-bottom: 0; }
+.topic-footer {
+  margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--rule);
+  font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+.topic-footer a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+}
+.topic-footer a:hover { border-bottom-style: solid; }
+
+/* ── Per-project arc page ───────────────────────────────────────────── */
+.arc-page {
+  max-width: 720px; margin: 20px auto; padding: 22px 28px;
+  background: var(--paper); border: 1px solid var(--rule);
+  border-left: 4px solid var(--accent);
+  border-radius: 4px; box-shadow: var(--shadow);
+  font-size: 15px; line-height: 1.7;
+}
+.arc-page h2 { margin: 0 0 6px; font-size: 22px; font-weight: 500; }
+.arc-tag-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin-bottom: 14px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.arc-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 16px;
+}
+.arc-meta code {
+  background: var(--chip); padding: 1px 7px; border-radius: 10px;
+  font-size: 11px; margin-right: 2px;
+}
+.arc-body { margin: 0 0 18px; }
+.arc-body p { margin: 0 0 14px; }
+.arc-body p:last-child { margin-bottom: 0; }
+.arc-footer {
+  margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--rule);
+  font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+.arc-footer a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+}
+.arc-footer a:hover { border-bottom-style: solid; }
 
 /* Day-has-docs indicator — small chip in the day header. */
 .day-docs {
@@ -900,7 +984,7 @@ INSPECT_WIDGET = """
 FILTER_WIDGET = """
 <script>
 (function() {
-  const data = window.__FILTERS__ || {projects: [], weeks: [], months: [], moods: [], learnings: [], years: [], tags: []};
+  const data = window.__FILTERS__ || {projects: [], weeks: [], months: [], moods: [], learnings: [], years: [], tags: [], topic_pages: [], arc_pages: []};
   if (!data.projects.length && !data.weeks.length && !data.months.length
       && !data.moods.length && !data.learnings.length && !data.years.length
       && !(data.tags || []).length) return;
@@ -927,7 +1011,10 @@ FILTER_WIDGET = """
   function saveViews(views) {
     try { localStorage.setItem(VIEWS_KEY, JSON.stringify([...views])); } catch (e) {}
   }
-  const state = {axis: null, value: null, views: loadViews()};
+  // `mode` is null | 'overview' | 'timeline'.
+  // Only project and topic axes use it; all others go straight to values.
+  const AXES_WITH_MODE = new Set(['project', 'topic']);
+  const state = {axis: null, value: null, mode: null, views: loadViews()};
   const modesRow = document.getElementById('filter-modes');
   const axesRow = document.getElementById('filter-axes');
   const options = document.getElementById('filter-options');
@@ -972,8 +1059,8 @@ FILTER_WIDGET = """
     if (modesRow) {
       const findActive = state.axis === 'search';
       modesRow.appendChild(makeChip(AXIS_LABELS.search, 'mode axis-search' + (findActive ? ' active' : ''), () => {
-        if (state.axis === 'search') { state.axis = null; state.value = null; }
-        else { state.axis = 'search'; state.value = null; }
+        if (state.axis === 'search') { state.axis = null; state.value = null; state.mode = null; }
+        else { state.axis = 'search'; state.value = null; state.mode = null; }
         apply();
       }));
       VIEW_KEYS.forEach(v => {
@@ -997,8 +1084,8 @@ FILTER_WIDGET = """
       const isActive = state.axis === k;
       const cls = 'axis axis-' + k + (isActive ? ' active' : '');
       const chip = makeChip(AXIS_LABELS[k], cls, () => {
-        if (state.axis === k) { state.axis = null; state.value = null; }
-        else { state.axis = k; state.value = null; }
+        if (state.axis === k) { state.axis = null; state.value = null; state.mode = null; }
+        else { state.axis = k; state.value = null; state.mode = null; }
         apply();
       });
       axesRow.appendChild(chip);
@@ -1027,6 +1114,27 @@ FILTER_WIDGET = """
       return;
     }
 
+    // For project/topic axes: show mode chips (Overview/Timeline) before values.
+    // Mode must be selected before the value list appears. Once mode is set,
+    // fall through to the normal value-rendering path below.
+    if (AXES_WITH_MODE.has(state.axis) && !state.mode && !state.value) {
+      // Show only the two mode chips — no values yet.
+      options.appendChild(makeChip('Overview', 'mode' + (state.mode === 'overview' ? ' active' : ''), () => {
+        state.mode = 'overview'; state.value = null; apply();
+      }));
+      options.appendChild(makeChip('Timeline', 'mode' + (state.mode === 'timeline' ? ' active' : ''), () => {
+        state.mode = 'timeline'; state.value = null; apply();
+      }));
+      return;
+    }
+
+    // If mode is set for project/topic, show the active mode chip as a
+    // "heading" (clickable to clear mode) then the value list or selected value.
+    if (AXES_WITH_MODE.has(state.axis) && state.mode && !state.value) {
+      options.appendChild(makeChip(state.mode === 'overview' ? 'Overview' : 'Timeline',
+        'mode active', () => { state.mode = null; state.value = null; apply(); }));
+    }
+
     if (state.value) {
       // Show the selected value as a single active sub-chip (click to clear).
       let label = state.value;
@@ -1039,12 +1147,41 @@ FILTER_WIDGET = """
       options.appendChild(makeChip(label, 'active', () => {
         state.value = null; apply();
       }));
-    } else {
-      // Build the list of choices. Long lists get an inline filter input
-      // and a scrollable container so a 100-tag Topic pool stays tidy.
-      const raw = (state.axis === 'project')
+    } else if (!AXES_WITH_MODE.has(state.axis) || state.mode) {
+      // Build the list of choices. In Overview mode for project/topic, only
+      // show values that have a generated page. Long lists get an inline filter.
+      let raw = (state.axis === 'project')
         ? data.projects.map(p => ({ key: p, label: p }))
         : poolFor(state.axis);
+
+      // Gate Overview mode to values with generated pages only.
+      if (state.mode === 'overview') {
+        const pagesSet = state.axis === 'topic'
+          ? new Set(data.topic_pages || [])
+          : new Set(data.arc_pages || []);
+        raw = raw.filter(x => pagesSet.has(x.key || x));
+      }
+
+      // Derive the click handler based on mode.
+      const onClick = (x) => {
+        if (state.mode === 'overview') {
+          // Navigate to the static page rather than filtering the feed.
+          const key = x.key || x;
+          let href = '';
+          if (state.axis === 'topic') {
+            // Find the slug from topic_pages_map if available, else mangle key.
+            const slugMap = data.topic_pages_map || {};
+            const slug = slugMap[key] || key.toLowerCase().replace(/[^\w-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+            href = 'topics/' + slug + '.html';
+          } else {
+            href = 'projects/' + encodeURIComponent(key) + '/index.html';
+          }
+          window.location.href = href;
+        } else {
+          state.value = x.key || x; apply();
+        }
+      };
+
       const LONG = 30;
       if (raw.length > LONG) {
         const wrap = document.createElement('div');
@@ -1059,9 +1196,9 @@ FILTER_WIDGET = """
         const renderList = (needle) => {
           list.innerHTML = '';
           const q = (needle || '').trim().toLowerCase();
-          const shown = raw.filter(x => !q || x.label.toLowerCase().includes(q));
-          shown.forEach(x => list.appendChild(makeChip(x.label, '',
-            () => { state.value = x.key; apply(); })));
+          const shown = raw.filter(x => !q || (x.label || x).toLowerCase().includes(q));
+          shown.forEach(x => list.appendChild(makeChip(x.label || x, '',
+            () => onClick(x))));
           if (!shown.length) {
             const empty = document.createElement('div');
             empty.className = 'filter-longpool-empty';
@@ -1076,8 +1213,8 @@ FILTER_WIDGET = """
         options.appendChild(wrap);
         setTimeout(() => box.focus(), 60);
       } else {
-        raw.forEach(x => options.appendChild(makeChip(x.label, '',
-          () => { state.value = x.key; apply(); })));
+        raw.forEach(x => options.appendChild(makeChip(x.label || x, '',
+          () => onClick(x))));
       }
     }
   }
@@ -1263,6 +1400,7 @@ FILTER_WIDGET = """
     const defArr = [...DEFAULT_VIEWS].sort();
     if (viewArr.join(',') !== defArr.join(',')) parts.push('views=' + viewArr.join(','));
     if (state.axis) parts.push('axis=' + state.axis);
+    if (state.mode) parts.push('mode=' + state.mode);
     if (state.value) parts.push('value=' + encodeURIComponent(state.value));
     const hash = parts.length ? '#' + parts.join('&') : '';
     if (location.hash !== hash) history.replaceState(null, '', location.pathname + hash);
@@ -1278,6 +1416,7 @@ FILTER_WIDGET = """
     // Only adopt filter-related hashes; date anchors like #2026-04-12 are ignored here.
     if (['project','week','month','mood','learning','search','year','topic'].includes(params.axis)) {
       state.axis = params.axis;
+      if (params.mode && ['overview','timeline'].includes(params.mode)) state.mode = params.mode;
       if (params.value) state.value = params.value;
     }
     if (params.views) {
@@ -2617,15 +2756,17 @@ def render_day_entry(date: str, narration: str, mood: str,
                      tags: list[str] | None = None,
                      narration_generated_at: str = "",
                      docs_added: list[dict] | None = None,
-                     known_docs: list[tuple[str, str]] | None = None) -> str:
+                     known_docs: list[tuple[str, str]] | None = None,
+                     known_topics: list[tuple[str, str]] | None = None) -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed."""
     pretty = _pretty_date_safe(date)
     known_docs = known_docs or []
+    known_topics = known_topics or []
     meta = _count_meta(counts_row, mood)
 
     if narration:
         paragraphs = "".join(
-            f"<p>{link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base)}</p>"
+            f"<p>{link_topic_titles(link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base), known_topics, base_path=anchor_base)}</p>"
             for p in narration.split("\n\n") if p.strip()
         )
         body = f'<div class="entry-body">{paragraphs}</div>'
@@ -2664,11 +2805,13 @@ def render_day_entry(date: str, narration: str, mood: str,
 
 
 def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./",
-                      known_docs: list[tuple[str, str]] | None = None) -> str:
+                      known_docs: list[tuple[str, str]] | None = None,
+                      known_topics: list[tuple[str, str]] | None = None) -> str:
     known_docs = known_docs or []
+    known_topics = known_topics or []
     if rollup_prose:
         paragraphs = "".join(
-            f"<p>{link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base)}</p>"
+            f"<p>{link_topic_titles(link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base), known_topics, base_path=anchor_base)}</p>"
             for p in rollup_prose.split("\n\n") if p.strip()
         )
         rollup_html = f'<div class="week-rollup">{paragraphs}</div>'
@@ -2687,16 +2830,18 @@ def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./",
 
 
 def render_month_break(year_month: str, rollup_prose: str, anchor_base: str = "./",
-                       known_docs: list[tuple[str, str]] | None = None) -> str:
+                       known_docs: list[tuple[str, str]] | None = None,
+                       known_topics: list[tuple[str, str]] | None = None) -> str:
     """Month divider + attached monthly retrospective, mirrors render_week_break."""
     known_docs = known_docs or []
+    known_topics = known_topics or []
     try:
         pretty = datetime.strptime(year_month, "%Y-%m").strftime("%B %Y")
     except ValueError:
         pretty = year_month
     if rollup_prose:
         paragraphs = "".join(
-            f"<p>{link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base)}</p>"
+            f"<p>{link_topic_titles(link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base), known_topics, base_path=anchor_base)}</p>"
             for p in rollup_prose.split("\n\n") if p.strip()
         )
         rollup_html = f'<div class="month-rollup">{paragraphs}</div>'
@@ -2721,9 +2866,17 @@ def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
                 learnings: list[dict] | None = None,
                 years: list[dict] | None = None,
                 tags: list[dict] | None = None,
+                topic_pages: list[str] | None = None,
+                topic_pages_map: dict[str, str] | None = None,
+                arc_pages: list[str] | None = None,
                 crumb_html: str = "") -> str:
     """Compose the feed page. Filtering is client-side via a breadcrumb
-    chip bar — see FILTER_WIDGET for the runtime behavior."""
+    chip bar — see FILTER_WIDGET for the runtime behavior.
+
+    topic_pages: list of tag strings that have generated topic pages.
+    topic_pages_map: {tag: slug} map so the JS can build correct hrefs.
+    arc_pages: list of project names that have arc pages.
+    """
     import json as _json
     has_any = bool(projects or weeks or months or moods or learnings or years or tags)
     if has_any:
@@ -2736,7 +2889,7 @@ def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
         )
     data_script = (
         f'<script>\n'
-        f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or []})};\n'
+        f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or [], "topic_pages": topic_pages or [], "topic_pages_map": topic_pages_map or {}, "arc_pages": arc_pages or []})};\n'
         f'</script>'
     )
     head = (
@@ -2758,4 +2911,159 @@ def render_chat_page() -> str:
         '<div class="sub">The chat is also available on every page via the bubble in the corner.</div></header>'
         '<p style="text-align:center; color:var(--muted);">'
         'Click the <b>?</b> bubble in the bottom-right corner to start.</p>'
+    )
+
+
+def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
+                      dates: list[str] | None = None,
+                      projects: list[str] | None = None,
+                      known_docs: list[tuple[str, str]] | None = None,
+                      topic_slugs: dict[str, str] | None = None,
+                      slug: str = "",
+                      generated_at: str = "") -> str:
+    """Standalone topic wiki page. `prose` is human-readable narration.
+
+    anchor_base: path from the topic page to the site root (default '../').
+    dates: list of YYYY-MM-DD dates on which this tag appeared.
+    projects: list of project display names involved with this tag.
+    known_docs: (title, doc_id) pairs for doc linkification.
+    topic_slugs: {tag: slug} mapping for topic linkification.
+    """
+    from claudejournal.post_process import link_anchors, link_doc_titles
+
+    known_docs = known_docs or []
+    topic_slugs = topic_slugs or {}
+
+    # Build prose HTML with post-processing (link_anchors + link_doc_titles +
+    # link_topic_titles deferred to avoid circular import — post_process
+    # will be extended in task 7).
+    paragraphs_html = ""
+    if prose:
+        paras = [p.strip() for p in prose.split("\n\n") if p.strip()]
+        processed = []
+        for p in paras:
+            h = link_doc_titles(link_anchors(p, base_path=anchor_base),
+                                known_docs, base_path=anchor_base)
+            # link_topic_titles applied after; imported lazily to avoid
+            # circular import at module load time.
+            try:
+                from claudejournal.post_process import link_topic_titles
+                tag_pairs = [(t, s) for t, s in topic_slugs.items() if t != tag]
+                h = link_topic_titles(h, tag_pairs, base_path=anchor_base)
+            except (ImportError, AttributeError):
+                pass  # task 7 not yet landed — silently skip
+            processed.append(f"<p>{h}</p>")
+        paragraphs_html = "".join(processed)
+
+    title = tag.replace("-", " ").title()
+
+    meta_parts: list[str] = []
+    if dates:
+        meta_parts.append(f"{len(dates)} days")
+    if projects:
+        plist = esc(", ".join(sorted(projects)))
+        meta_parts.append(f"projects: {plist}")
+    if generated_at:
+        meta_parts.append(f"updated {esc(generated_at[:10])}")
+    meta_html = (
+        f'<div class="topic-meta">{" · ".join(meta_parts)}</div>'
+        if meta_parts else ""
+    )
+
+    # Audio play button — wired by TTS_WIDGET's MutationObserver, but it
+    # doesn't know about topic pages yet; we embed the data-attr so future
+    # wiring is trivial. The base filename matches audio.py's convention.
+    audio_slug = slug or tag
+    audio_html = (
+        f'<span data-topic-slug="{esc(audio_slug)}" '
+        f'data-audio-base="{esc(anchor_base)}audio/topic-{esc(audio_slug)}.wav"></span>'
+    )
+
+    # "View all entries" link — filters the main feed to this tag.
+    import urllib.parse
+    tag_encoded = urllib.parse.quote(tag, safe="")
+    view_link = (
+        f'<a href="{anchor_base}index.html#axis=topic&value={tag_encoded}">'
+        f'View all entries tagged {esc(tag)}</a>'
+    )
+
+    return (
+        f'<article class="topic-page">'
+        f'  <div class="topic-tag-label">topic</div>'
+        f'  <h2>{esc(title)}</h2>'
+        f'  {meta_html}'
+        f'  {audio_html}'
+        f'  <div class="topic-body">{paragraphs_html}</div>'
+        f'  <div class="topic-footer">{view_link}</div>'
+        f'</article>'
+    )
+
+
+def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", *,
+                    first_date: str = "",
+                    last_date: str = "",
+                    session_count: int = 0,
+                    top_tags: list[str] | None = None,
+                    known_docs: list[tuple[str, str]] | None = None,
+                    topic_slugs: dict[str, str] | None = None,
+                    generated_at: str = "") -> str:
+    """Standalone project arc retrospective page.
+
+    anchor_base: path from the arc page (out/projects/<name>/index.html)
+    to the site root — default '../../'.
+    """
+    from claudejournal.post_process import link_anchors, link_doc_titles
+
+    known_docs = known_docs or []
+    topic_slugs = topic_slugs or {}
+
+    paragraphs_html = ""
+    if prose:
+        paras = [p.strip() for p in prose.split("\n\n") if p.strip()]
+        processed = []
+        for p in paras:
+            h = link_doc_titles(link_anchors(p, base_path=anchor_base),
+                                known_docs, base_path=anchor_base)
+            try:
+                from claudejournal.post_process import link_topic_titles
+                tag_pairs = list(topic_slugs.items())
+                h = link_topic_titles(h, tag_pairs, base_path=anchor_base)
+            except (ImportError, AttributeError):
+                pass
+            processed.append(f"<p>{h}</p>")
+        paragraphs_html = "".join(processed)
+
+    meta_parts: list[str] = []
+    if first_date and last_date:
+        if first_date == last_date:
+            meta_parts.append(esc(first_date))
+        else:
+            meta_parts.append(f"{esc(first_date)} – {esc(last_date)}")
+    if session_count:
+        meta_parts.append(f"{session_count} sessions")
+    if top_tags:
+        tags_html = " ".join(f'<code>{esc(t)}</code>' for t in top_tags[:8])
+        meta_parts.append(f"tags: {tags_html}")
+    if generated_at:
+        meta_parts.append(f"updated {esc(generated_at[:10])}")
+    meta_html = (
+        f'<div class="arc-meta">{" · ".join(meta_parts)}</div>'
+        if meta_parts else ""
+    )
+
+    import urllib.parse
+    name_encoded = urllib.parse.quote(project_name, safe="")
+    view_link = (
+        f'<a href="{anchor_base}index.html#axis=project&value={name_encoded}">'
+        f'View all entries for {esc(project_name)}</a>'
+    )
+
+    return (
+        f'<article class="arc-page">'
+        f'  <div class="arc-tag-label">project arc</div>'
+        f'  <h2>{esc(project_name)}</h2>'
+        f'  {meta_html}'
+        f'  <div class="arc-body">{paragraphs_html}</div>'
+        f'  <div class="arc-footer">{view_link}</div>'
+        f'</article>'
     )
