@@ -483,11 +483,16 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     topic_pages_list = _rendered_topic_tags  # tags with pages
     topic_pages_map = {t: _slug_map_global.get(t, t) for t in _rendered_topic_tags}
 
-    # Arc pages data: projects with a project_arc narration (task 16 populates).
+    # Arc pages data: display names of projects with a project_arc narration.
+    # Used by the JS Overview mode gate — the project filter pool uses display names.
     arc_pages_list = [
-        r["key"] for r in conn.execute(
-            "SELECT key FROM narrations WHERE scope='project_arc' AND prose IS NOT NULL AND prose != ''"
+        r["display_name"] for r in conn.execute(
+            """SELECT p.display_name FROM narrations n
+               JOIN projects p ON p.id = n.key
+               WHERE n.scope = 'project_arc' AND n.prose IS NOT NULL AND n.prose != ''
+               ORDER BY p.display_name"""
         ).fetchall()
+        if r["display_name"]
     ]
 
     # known_topics: (tag_name, slug) pairs for linkification in narration prose.
@@ -517,14 +522,26 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     (out_dir / "index.html").write_text(layout("Home", body, anchor_base="./"), encoding="utf-8")
     stats["index"] = 1
 
-    # ---------- Per-project URLs: redirect stubs to home#axis=project&value=<name> ----------
-    # Previously we rendered a full feed per project. The home-feed filter
-    # now does that job, so we just emit lightweight redirects for back-compat
-    # with any memory/external links people saved.
+    # ---------- Per-project pages: arc narrative OR redirect stub ----------
+    # Projects with a project_arc narration get a real arc page. Others keep
+    # the lightweight redirect stub for back-compat with saved links.
     import re as _re
     _SAFE_PROJECT = _re.compile(r"^[\w\-. ]+$")
+
+    # Build a map of project_id -> arc narration for quick lookup.
+    _arc_rows = conn.execute(
+        """SELECT n.key AS project_id, n.prose, n.generated_at,
+                  p.display_name
+           FROM narrations n
+           JOIN projects p ON p.id = n.key
+           WHERE n.scope = 'project_arc' AND n.prose IS NOT NULL AND n.prose != ''"""
+    ).fetchall()
+    _arc_by_pid = {r["project_id"]: r for r in _arc_rows}
+
+    # Project metadata: first/last date, session count, top tags
     for r in pr:
         pname = r["display_name"]
+        pid = r["id"]
         # Defensive: project names come from local Claude Code session paths
         # but we still treat them as untrusted before they hit the filesystem.
         # Reject anything that could escape out_dir/projects/ via traversal.
@@ -532,14 +549,62 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             continue
         pdir = out_dir / "projects" / pname
         pdir.mkdir(parents=True, exist_ok=True)
-        href = f"../../index.html#axis=project&value={pname}"
-        (pdir / "index.html").write_text(
-            f'<!doctype html><meta charset="utf-8">'
-            f'<meta http-equiv="refresh" content="0; url={esc(href)}">'
-            f'<title>{esc(pname)}</title>'
-            f'<p>Redirecting to <a href="{esc(href)}">{esc(pname)}</a>...</p>',
-            encoding="utf-8",
-        )
+
+        arc_row = _arc_by_pid.get(pid)
+        if arc_row:
+            # Build metadata for the arc page header
+            date_bounds = conn.execute(
+                "SELECT MIN(date) as first_date, MAX(date) as last_date "
+                "FROM events WHERE project_id = ? AND date != ''",
+                (pid,),
+            ).fetchone()
+            session_count = conn.execute(
+                "SELECT COUNT(DISTINCT session_id) FROM session_briefs WHERE project_id = ?",
+                (pid,),
+            ).fetchone()[0]
+            # Top tags across all briefs for this project
+            top_tags_raw: dict[str, int] = {}
+            for br in conn.execute(
+                "SELECT brief_json FROM session_briefs WHERE project_id = ?", (pid,)
+            ).fetchall():
+                try:
+                    b = json.loads(br["brief_json"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                for t in (b.get("tags") or []):
+                    if isinstance(t, str) and t.strip():
+                        top_tags_raw[t.strip().lower()] = top_tags_raw.get(t.strip().lower(), 0) + 1
+            top_tags = [t for t, _ in sorted(top_tags_raw.items(), key=lambda x: -x[1])][:8]
+
+            page_html = render_arc_page(
+                pname, arc_row["prose"], anchor_base="../../",
+                first_date=(date_bounds["first_date"] or "") if date_bounds else "",
+                last_date=(date_bounds["last_date"] or "") if date_bounds else "",
+                session_count=session_count,
+                top_tags=top_tags,
+                known_docs=known_docs_all,
+                topic_slugs=_slug_map_global,
+                generated_at=arc_row["generated_at"] or "",
+            )
+            body = (
+                f'<header class="site-head">'
+                f'  <div class="crumb"><a href="../../index.html">← back to journal</a></div>'
+                f'</header>{page_html}<footer>claudejournal</footer>'
+            )
+            (pdir / "index.html").write_text(
+                layout(pname, body, anchor_base="../../"), encoding="utf-8"
+            )
+            stats["project_arc"] = stats.get("project_arc", 0) + 1
+        else:
+            # No arc yet — keep redirect stub as graceful degradation.
+            href = f"../../index.html#axis=project&value={pname}"
+            (pdir / "index.html").write_text(
+                f'<!doctype html><meta charset="utf-8">'
+                f'<meta http-equiv="refresh" content="0; url={esc(href)}">'
+                f'<title>{esc(pname)}</title>'
+                f'<p>Redirecting to <a href="{esc(href)}">{esc(pname)}</a>...</p>',
+                encoding="utf-8",
+            )
         stats["project_index"] += 1
 
     # ---------- Weekly retrospective standalone pages ----------

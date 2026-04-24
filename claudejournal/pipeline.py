@@ -90,6 +90,17 @@ def run_all(cfg: Config, *,
     stats["doc_summary"] = doc_stats
     _tick("doc_summary", 1, 1, "done")
 
+    if verbose: print("[2d] project-arcs")
+    _tick("arc_summary", 0, 1, "starting")
+    from claudejournal import arcs as arcsmod
+    arc_stats = arcsmod.run(
+        cfg, all_=True, model=cfg.arc_model, force=force,
+        verbose=verbose,
+        progress=lambda d, t, l="": _tick("arc_summary", d, t, l),
+    )
+    stats["arc_summary"] = arc_stats
+    _tick("arc_summary", 1, 1, "done")
+
     if verbose: print("[2c] topic-summaries")
     _tick("topic_summary", 0, 1, "starting")
     from claudejournal import topics as topicsmod

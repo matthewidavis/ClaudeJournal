@@ -168,6 +168,23 @@ def reindex(conn: sqlite3.Connection, claude_home: Path, verbose: bool = False) 
         )
         stats["documents"] += 1
 
+    # Project arc narrations — retrospective prose per project.
+    stats["arcs"] = 0
+    for r in conn.execute(
+        """SELECT n.key AS project_id, n.prose, p.display_name AS pname
+           FROM narrations n
+           LEFT JOIN projects p ON p.id = n.key
+           WHERE n.scope = 'project_arc' AND n.prose IS NOT NULL AND n.prose != ''"""
+    ).fetchall():
+        pname = r["pname"] or r["project_id"]
+        conn.execute(
+            "INSERT INTO rag_chunks (kind, date, project_id, project_name, title, body) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("project_arc", "", r["project_id"], pname,
+             f"Arc: {pname}", r["prose"]),
+        )
+        stats["arcs"] += 1
+
     # Topic narrations — wiki-style synthesis pages. Prose is human-readable.
     stats["topics"] = 0
     for r in conn.execute(

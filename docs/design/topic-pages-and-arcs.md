@@ -1,6 +1,6 @@
 # Topic Pages + Project Arc Pages -- Design Note
 
-**Status:** planned (Phase 1 + Phase 2 scoped for implementation)
+**Status:** Phase 1 + Phase 2 implemented (2026-04-24). Phase 3 (on-demand summarize) deferred — design note below.
 **Drafted:** 2026-04-24
 **Context:** extending the journal with living wiki-style synthesis pages per tag and per project
 

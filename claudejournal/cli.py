@@ -110,6 +110,21 @@ def main(argv: list[str] | None = None) -> int:
     p_ask.add_argument("--model", default="sonnet")
     p_ask.add_argument("--k", type=int, default=8, help="Retrieval breadth")
 
+    p_arc = sub.add_parser("arc", help="Manage project arc narration pages")
+    arc_sub = p_arc.add_subparsers(dest="arc_cmd", required=True)
+
+    p_arc_list = arc_sub.add_parser("list", help="List all projects and arc status")
+    p_arc_list.add_argument("--json", action="store_true")
+
+    p_arc_sum = arc_sub.add_parser("summarize", help="Regenerate one or all project arc pages")
+    p_arc_sum.add_argument("project", nargs="?", default=None,
+                           help="Project name or id (omit with --all for full sweep)")
+    p_arc_sum.add_argument("--all", action="store_true", help="Regenerate all projects")
+    p_arc_sum.add_argument("--force", action="store_true",
+                           help="Re-generate even if hash matches")
+    p_arc_sum.add_argument("--model", default=None,
+                           help="Claude model (default: config.arc_model)")
+
     p_topic = sub.add_parser("topic", help="Manage topic narration pages")
     topic_sub = p_topic.add_subparsers(dest="topic_cmd", required=True)
 
@@ -741,6 +756,56 @@ def main(argv: list[str] | None = None) -> int:
             print()
             print(f"[{len(result.hits)} sources: " +
                   ", ".join(f"{h.kind}@{h.date or '-'}" for h in result.hits) + "]")
+        return 0
+
+    if args.cmd == "arc":
+        from claudejournal import arcs as arcsmod
+        from claudejournal.db import connect as _connect
+        import json as _json
+        conn = _connect(cfg.db_path)
+        try:
+            if args.arc_cmd == "list":
+                items = arcsmod.list_arcs(conn)
+                if args.json:
+                    print(_json.dumps(items, indent=2))
+                else:
+                    if not items:
+                        print("(no projects with project_day narrations yet)")
+                    else:
+                        print(f"{'project':45s}  {'status':8s}  {'days':4s}  generated_at")
+                        for it in items:
+                            ga = (it["generated_at"] or "-")[:19]
+                            pname = it["project_name"][:43]
+                            print(f"  {pname:43s}  {it['status']:8s}  {it['days']:4d}  {ga}")
+                        print(f"\n{len(items)} projects")
+            elif args.arc_cmd == "summarize":
+                model = args.model or cfg.arc_model
+                if args.all or args.project is None:
+                    stats = arcsmod.run(cfg, all_=True, force=args.force,
+                                        model=model, verbose=True)
+                    print(f"done: {stats['generated']} generated, {stats['skipped']} skipped, "
+                          f"{stats['errors']} errors")
+                else:
+                    # Single project — lookup by display name or project_id
+                    hint = args.project.strip()
+                    prow = conn.execute(
+                        "SELECT id, display_name FROM projects WHERE display_name = ? OR id = ?",
+                        (hint, hint),
+                    ).fetchone()
+                    if not prow:
+                        # Try case-insensitive
+                        prow = conn.execute(
+                            "SELECT id, display_name FROM projects WHERE lower(display_name) = ?",
+                            (hint.lower(),),
+                        ).fetchone()
+                    if not prow:
+                        print(f"error: no project found matching {hint!r}")
+                        return 1
+                    s = arcsmod.summarize_arc(conn, prow["id"], prow["display_name"],
+                                              model=model, force=args.force, verbose=True)
+                    print(f"done: {s['generated']} generated, {s['skipped']} skipped")
+        finally:
+            conn.close()
         return 0
 
     if args.cmd == "topic":

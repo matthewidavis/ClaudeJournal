@@ -229,6 +229,28 @@ def generate_for_site(cfg, out_dir: Path, voice: str = DEFAULT_VOICE,
         "SELECT date, prose FROM interludes WHERE prose IS NOT NULL AND prose != ''"
     ):
         rows.append((r["date"], f"interlude-{r['date']}", "interlude", r["prose"]))
+    # Project arc narrations — retrospective prose per project.
+    # Filename: arc-{project_id_slug}.wav where slug mirrors _project_folder_name.
+    import re as _re
+    def _arc_slug(pid: str) -> str:
+        """Mangle project_id for filesystem: replace unsafe chars with hyphens."""
+        s = pid
+        for ch in (":", "\\", "/", " "):
+            s = s.replace(ch, "-")
+        s = _re.sub(r"-{2,}", "-", s).strip("-")
+        return s or "arc"
+    for r in conn.execute(
+        """SELECT n.key AS project_id, n.prose, p.display_name AS pname
+           FROM narrations n
+           LEFT JOIN projects p ON p.id = n.key
+           WHERE n.scope = 'project_arc' AND n.prose IS NOT NULL AND n.prose != ''
+           ORDER BY p.display_name ASC"""
+    ):
+        pid = r["project_id"]
+        slug = _arc_slug(pid)
+        pname = r["pname"] or pid
+        rows.append((f"arc-{pname}", f"arc-{slug}", "arc", r["prose"]))
+
     # Topic narrations — atemporal wiki pages, sorted alphabetically by tag.
     # Slug derivation mirrors topics.py._safe_slug for filename consistency.
     from claudejournal.topics import build_slug_map, tags_with_enough_coverage
