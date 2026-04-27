@@ -1059,6 +1059,72 @@ footer {
 .entity-ai_model  { color: var(--ok, #4caf77); }
 .entity-library   { color: var(--warn, #d4a017); }
 .entity-service   { color: var(--muted); }
+
+/* ── Temporal echoes banner on daily entries ─────────────────────────── */
+.echo-banner {
+  margin: 6px 0 2px;
+  font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
+  opacity: 0.82;
+}
+.echo-banner-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--accent-soft); font-weight: 600;
+  white-space: nowrap;
+}
+.echo-item { display: inline; }
+.echo-item a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+.echo-item a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.echo-sep { color: var(--rule); }
+
+/* ── Temporal echoes standalone page (out/echoes.html) ───────────────── */
+.echoes-page {
+  max-width: 720px; margin: 20px auto; padding: 0 0 40px;
+}
+.echoes-page h2 { margin: 0 0 6px; font-size: 22px; font-weight: 500; }
+.echoes-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 24px;
+}
+.echoes-section { margin-bottom: 36px; }
+.echoes-section-heading {
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  margin: 0 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.echo-card {
+  margin: 0 0 12px; padding: 10px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--accent-soft);
+  border-radius: 4px; background: var(--paper); font-size: 14px;
+  line-height: 1.55;
+}
+.echo-card-title {
+  font-weight: 500; color: var(--fg); margin-bottom: 4px;
+}
+.echo-card-title a { color: var(--accent); text-decoration: none; }
+.echo-card-title a:hover { text-decoration: underline; }
+.echo-card-body {
+  color: var(--muted); font-size: 13px;
+  font-style: italic; margin-bottom: 4px;
+}
+.echo-card-footer {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+}
+.echo-friction-card {
+  border-left-color: var(--warn);
+}
+.echo-milestone-card {
+  border-left-color: var(--ok);
+}
+.echoes-empty {
+  color: var(--muted); font-style: italic; text-align: center;
+  padding: 40px 0; font-size: 15px;
+}
 """
 
 
@@ -1277,6 +1343,10 @@ FILTER_WIDGET = """
       // Learnings chip — navigates to the learnings standing page.
       modesRow.appendChild(makeChip('Learnings', 'mode mode-learnings', () => {
         window.location.href = anchorBase + 'learnings.html';
+      }));
+      // Echoes chip — navigates to the temporal recall standing page.
+      modesRow.appendChild(makeChip('Echoes', 'mode mode-echoes', () => {
+        window.location.href = anchorBase + 'echoes.html';
       }));
     }
 
@@ -3037,6 +3107,62 @@ def render_interlude_block(interlude: dict | None) -> str:
             f'{body}</div>')
 
 
+def _render_echo_banner(echoes: dict, anchor_base: str, date: str) -> str:
+    """Render the subtle temporal recall banner for a daily entry.
+
+    Returns an empty string when there are no echoes (no banner rendered).
+    Banner is placed between the entry header and the body prose.
+    """
+    if not echoes:
+        return ""
+    prior_years = echoes.get("prior_years") or []
+    recurring = echoes.get("recurring_friction") or []
+    milestones = echoes.get("milestones") or []
+    if not (prior_years or recurring or milestones):
+        return ""
+
+    items: list[str] = []
+
+    for py in prior_years[:3]:  # cap at 3 prior-year links
+        py_date = py["date"]
+        yr_diff = py["year_diff"]
+        label = f"{yr_diff} year{'s' if yr_diff != 1 else ''} ago"
+        snippet = py.get("snippet", "")
+        if snippet:
+            title_attr = f' title="{esc(snippet)}"'
+        else:
+            title_attr = ""
+        items.append(
+            f'<span class="echo-item">{esc(label)}: '
+            f'<a href="{anchor_base}#{esc(py_date)}"{title_attr}>{esc(py_date)}</a>'
+            f'</span>'
+        )
+
+    for rf in recurring[:2]:  # cap at 2 recurring friction items
+        tag = rf["tag"]
+        count = rf["count"]
+        items.append(
+            f'<span class="echo-item">recurring friction &ldquo;{esc(tag)}&rdquo; '
+            f'({count}× across {count} dates)</span>'
+        )
+
+    for ms in milestones[:2]:  # cap at 2 milestones
+        items.append(
+            f'<span class="echo-item">{esc(ms["project_name"])} is {esc(ms["label"])}</span>'
+        )
+
+    if not items:
+        return ""
+
+    inner = '<span class="echo-sep"> · </span>'.join(items)
+    return (
+        f'<div class="echo-banner">'
+        f'<span class="echo-banner-label">memory</span> '
+        f'{inner}'
+        f'</div>'
+    )
+
+
 def render_day_entry(date: str, narration: str, mood: str,
                      counts_row: dict, prompts: list[dict], snippets: list[dict],
                      files: list[dict], briefs: list[dict] | None,
@@ -3052,12 +3178,18 @@ def render_day_entry(date: str, narration: str, mood: str,
                      known_docs: list[tuple[str, str]] | None = None,
                      known_topics: list[tuple[str, str]] | None = None,
                      open_loops_count: int = 0,
-                     entities: list[dict] | None = None) -> str:
+                     entities: list[dict] | None = None,
+                     echoes: dict | None = None) -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed.
 
     open_loops_count: number of open friction loops older than 7 days that
       touch any project active on this day. When > 0, a subtle indicator is
       shown in the entry header meta line linking to loops.html.
+
+    echoes: temporal recall dict as returned by temporal.compute_all_echoes()
+      for this date. When provided and non-empty, a subtle "memory" banner is
+      rendered between the entry header and body. Omit (or pass None) for
+      no banner.
     """
     pretty = _pretty_date_safe(date)
     known_docs = known_docs or []
@@ -3095,6 +3227,9 @@ def render_day_entry(date: str, narration: str, mood: str,
             f'</span>'
         )
 
+    # Temporal recall (echo) banner — only shown when echoes exist
+    echo_html = _render_echo_banner(echoes or {}, anchor_base=anchor_base, date=date)
+
     projects_attr = ",".join(projects_in_day or [])
     week_attr = _iso_week_of(date)
     year = _pretty_date_year(date)
@@ -3112,6 +3247,7 @@ def render_day_entry(date: str, narration: str, mood: str,
         f'    <h2><a href="#{esc(date)}" style="color:inherit;text-decoration:none;">{esc(pretty)} {year_html}</a></h2>'
         f'    <span class="meta">{meta}{loops_html}</span>'
         f'  </header>'
+        f'  {echo_html}'
         f'  {body}'
         f'  {activity}'
         f'</article>'
@@ -3814,5 +3950,192 @@ def render_learnings_page(learnings: list[dict], anchor_base: str = "./",
         f'  <h2>Learnings</h2>'
         f'  <div class="learnings-meta">{esc(meta)}</div>'
         f'  {"".join(groups_html)}'
+        f'</div>'
+    )
+
+
+def render_echoes_page(echoes_by_date: dict[str, dict], anchor_base: str = "./",
+                       known_topics: list[tuple[str, str]] | None = None) -> str:
+    """Standalone temporal recall page (out/echoes.html).
+
+    echoes_by_date: {date_str: echoes_dict} as returned by
+      temporal.compute_all_echoes(). Only dates with at least one echo are
+      present in the dict.
+
+    Three sections are rendered:
+      1. On This Day — prior-year same-month-day entries (most recent trigger date first)
+      2. Recurring Friction — tags that have appeared with friction on 3+ dates
+      3. Milestones — project anniversary markers that fell within the journal
+    """
+    from collections import defaultdict
+
+    known_topics = known_topics or []
+
+    if not echoes_by_date:
+        return (
+            '<div class="echoes-page">'
+            '  <h2>Echoes</h2>'
+            '  <div class="echoes-meta">Temporal patterns — prior years, recurring friction, project milestones.</div>'
+            '  <div class="echoes-empty">No temporal patterns found yet — come back after a year of journaling.</div>'
+            '</div>'
+        )
+
+    # ---- Collect and deduplicate across all trigger dates -------------------
+
+    # prior-year: key = (trigger_date, prior_date) so we deduplicate if the
+    # same pair would appear from multiple trigger dates (shouldn't happen often
+    # but guard it).  Present newest trigger_date first.
+    prior_pairs: list[dict] = []  # [{trigger_date, prior_date, snippet, year_diff}]
+    seen_prior: set[tuple[str, str]] = set()
+    for trigger_date in sorted(echoes_by_date.keys(), reverse=True):
+        for py in echoes_by_date[trigger_date].get("prior_years") or []:
+            key = (trigger_date, py["date"])
+            if key in seen_prior:
+                continue
+            seen_prior.add(key)
+            prior_pairs.append({
+                "trigger_date": trigger_date,
+                "prior_date": py["date"],
+                "snippet": py.get("snippet", ""),
+                "year_diff": py["year_diff"],
+            })
+
+    # recurring friction: key = tag; aggregate dates seen across all trigger dates
+    rf_by_tag: dict[str, dict] = {}  # tag -> {count, dates(set), example_friction}
+    for trigger_date, echoes in echoes_by_date.items():
+        for rf in echoes.get("recurring_friction") or []:
+            tag = rf["tag"]
+            if tag not in rf_by_tag:
+                rf_by_tag[tag] = {
+                    "tag": tag,
+                    "count": rf["count"],
+                    "dates": set(rf["dates"]),
+                    "example_friction": rf["example_friction"],
+                }
+            else:
+                rf_by_tag[tag]["dates"].update(rf["dates"])
+                if rf["count"] > rf_by_tag[tag]["count"]:
+                    rf_by_tag[tag]["count"] = rf["count"]
+                    rf_by_tag[tag]["example_friction"] = rf["example_friction"]
+    rf_list = sorted(rf_by_tag.values(), key=lambda x: -x["count"])
+
+    # milestones: key = (project, label) to deduplicate near-threshold hits
+    ms_by_key: dict[tuple[str, str], dict] = {}
+    for trigger_date, echoes in echoes_by_date.items():
+        for ms in echoes.get("milestones") or []:
+            key = (ms["project"], ms["label"])
+            if key not in ms_by_key:
+                ms_by_key[key] = dict(ms, trigger_date=trigger_date)
+    ms_list = sorted(ms_by_key.values(), key=lambda x: x.get("trigger_date", ""), reverse=True)
+
+    # ---- Build HTML ---------------------------------------------------------
+
+    sections: list[str] = []
+    total_signals = len(prior_pairs) + len(rf_list) + len(ms_list)
+    meta = (
+        f'{total_signals} signal{"s" if total_signals != 1 else ""}: '
+        f'{len(prior_pairs)} prior-year entr{"ies" if len(prior_pairs) != 1 else "y"}, '
+        f'{len(rf_list)} recurring friction pattern{"s" if len(rf_list) != 1 else ""}, '
+        f'{len(ms_list)} milestone{"s" if len(ms_list) != 1 else ""}'
+    )
+
+    # Section 1: On This Day
+    if prior_pairs:
+        cards = []
+        for pp in prior_pairs[:30]:  # cap at 30 to keep page manageable
+            trigger = pp["trigger_date"]
+            prior = pp["prior_date"]
+            yr_diff = pp["year_diff"]
+            label = f"{yr_diff} year{'s' if yr_diff != 1 else ''} ago"
+            snippet = pp["snippet"]
+            snippet_html = (
+                f'<div class="echo-card-body">{esc(snippet)}</div>'
+                if snippet else ""
+            )
+            cards.append(
+                f'<div class="echo-card">'
+                f'  <div class="echo-card-title">'
+                f'    <a href="{anchor_base}#{esc(prior)}">{esc(prior)}</a>'
+                f'    &mdash; {esc(label)}'
+                f'  </div>'
+                f'  {snippet_html}'
+                f'  <div class="echo-card-footer">'
+                f'    <span>triggered on {esc(trigger)}</span>'
+                f'  </div>'
+                f'</div>'
+            )
+        sections.append(
+            f'<div class="echoes-section">'
+            f'  <div class="echoes-section-heading">On This Day</div>'
+            f'  {"".join(cards)}'
+            f'</div>'
+        )
+
+    # Section 2: Recurring Friction
+    if rf_list:
+        cards = []
+        for rf in rf_list[:20]:
+            tag = rf["tag"]
+            count = rf["count"]
+            example = rf["example_friction"]
+            all_dates = sorted(rf["dates"])
+            date_range = f"{all_dates[0]} – {all_dates[-1]}" if len(all_dates) > 1 else all_dates[0] if all_dates else ""
+            # Apply topic linkification to the friction example
+            try:
+                example_html = link_topic_titles(esc(example), known_topics, base_path=anchor_base)
+            except Exception:
+                example_html = esc(example)
+            cards.append(
+                f'<div class="echo-card echo-friction-card">'
+                f'  <div class="echo-card-title">'
+                f'    <code>{esc(tag)}</code> — friction on {count} date{"s" if count != 1 else ""}'
+                f'  </div>'
+                f'  <div class="echo-card-body">{example_html}</div>'
+                f'  <div class="echo-card-footer">'
+                f'    <span>{esc(date_range)}</span>'
+                f'  </div>'
+                f'</div>'
+            )
+        sections.append(
+            f'<div class="echoes-section">'
+            f'  <div class="echoes-section-heading">Recurring Friction</div>'
+            f'  {"".join(cards)}'
+            f'</div>'
+        )
+
+    # Section 3: Milestones
+    if ms_list:
+        cards = []
+        for ms in ms_list[:20]:
+            proj_name = ms["project_name"]
+            label = ms["label"]
+            trigger = ms.get("trigger_date", "")
+            first_seen = ms.get("first_seen", "")
+            cards.append(
+                f'<div class="echo-card echo-milestone-card">'
+                f'  <div class="echo-card-title">{esc(proj_name)} — {esc(label)}</div>'
+                f'  <div class="echo-card-footer">'
+                f'    <span>first seen {esc(first_seen)}</span>'
+                f'    {("<span>near " + esc(trigger) + "</span>") if trigger else ""}'
+                f'  </div>'
+                f'</div>'
+            )
+        sections.append(
+            f'<div class="echoes-section">'
+            f'  <div class="echoes-section-heading">Project Milestones</div>'
+            f'  {"".join(cards)}'
+            f'</div>'
+        )
+
+    if not sections:
+        sections_html = '<div class="echoes-empty">No patterns to surface yet.</div>'
+    else:
+        sections_html = "".join(sections)
+
+    return (
+        f'<div class="echoes-page">'
+        f'  <h2>Echoes</h2>'
+        f'  <div class="echoes-meta">{esc(meta)}</div>'
+        f'  {sections_html}'
         f'</div>'
     )
