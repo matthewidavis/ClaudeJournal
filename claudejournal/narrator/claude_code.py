@@ -84,9 +84,13 @@ Rules you MUST follow:
 Output ONLY valid JSON matching the supplied schema. No prose, no markdown, no backticks."""
 
 PROMPT_VERSION = "v2"
-# v4 bumps the shape of the narration prompt to include a DOCUMENTS ADDED
-# TODAY block. Narrations written under v3 will regenerate on first run.
-NARRATION_PROMPT_VERSION = "v4"
+# v5 adds the PINNED CORRECTIONS block (Phase E annotations). Narrations written
+# under v4 will regenerate on first run only when the date has annotations;
+# dates without annotations are unaffected by the version bump because the
+# input hash includes the annotation content (empty list → same hash as before).
+# We bump the version here so annotated dates always regenerate when annotations
+# are added or changed, via the hash cascade in narrate._narration_input_hash.
+NARRATION_PROMPT_VERSION = "v5"
 
 
 NARRATION_SYSTEM = """You are ghostwriting a personal journal entry in the user's first-person voice, based on structured summaries of their day's work sessions.
@@ -210,6 +214,33 @@ def _build_narration_message(inp: NarrationInput) -> str:
                 lines.append(f"      hook: {hook}")
             if takeaway:
                 lines.append(f"      takeaway: {takeaway}")
+        lines.append("")
+
+    # PINNED CORRECTIONS — user-authored annotations for this date (Phase E).
+    # These are ground truth. Treat them as absolute corrections: integrate
+    # naturally, never contradict, never omit if pin_priority >= 1.
+    # Scope is intentionally limited to 'daily' narration in v1. Topic, arc,
+    # weekly, and monthly scopes are deferred to a follow-up plan (see E5 design
+    # note) to limit blast radius.
+    if inp.scope == "daily" and inp.annotations:
+        lines.append(
+            "USER CORRECTIONS (ground truth — integrate these naturally, "
+            "never contradict, never ignore):"
+        )
+        lines.append(
+            "The user has corrected the following facts or details about this day. "
+            "Treat every item below as authoritative. Weave corrections into the "
+            "prose as if they were always true — do not explicitly note that a "
+            "correction was made. Do not omit any high-priority item."
+        )
+        for ann in inp.annotations:
+            ann_type = ann.get("annotation_type", "append")
+            priority = ann.get("pin_priority", 1)
+            text = ann.get("text", "").strip()
+            if not text:
+                continue
+            priority_marker = " [HIGH PRIORITY]" if priority >= 2 else ""
+            lines.append(f"  [{ann_type.upper()}{priority_marker}] {text}")
         lines.append("")
 
     if inp.anchors:

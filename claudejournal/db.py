@@ -165,6 +165,31 @@ CREATE TABLE IF NOT EXISTS brief_entities (
 );
 CREATE INDEX IF NOT EXISTS idx_brief_entities_date ON brief_entities(date);
 CREATE INDEX IF NOT EXISTS idx_brief_entities_entity ON brief_entities(entity_id);
+
+-- User-authored annotations on any journal entry.  Populated via the
+-- /api/annotations CRUD endpoints.  Annotation text is treated as ground truth
+-- and injected into narration prompts as a PINNED CORRECTIONS block (Phase E).
+-- target_scope matches narrations.scope: 'daily', 'project_day', 'weekly',
+--   'monthly', 'topic', 'project_arc', 'document'.
+-- target_key: date string for 'daily'; 'project_id|date' for 'project_day';
+--   tag name for 'topic'; project_id for 'project_arc'; doc id for 'document'.
+-- annotation_type: 'append' (add context), 'correction' (fix a fact),
+--   'override' (replace a section).
+-- pin_priority: 1=normal, 2=high (always surface even under token pressure).
+-- scope_tag: optional free label, e.g. 'resolved' (used by E7 to close loops).
+CREATE TABLE IF NOT EXISTS annotations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_scope TEXT NOT NULL,
+    target_key   TEXT NOT NULL,
+    annotation_type TEXT NOT NULL DEFAULT 'append',
+    text         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    pin_priority INTEGER NOT NULL DEFAULT 1,
+    scope_tag    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_annotations_target
+    ON annotations(target_scope, target_key);
 """
 
 

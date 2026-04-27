@@ -364,6 +364,41 @@ def main(argv: list[str] | None = None) -> int:
                 # download. Routed through the API (not a static mount)
                 # so we can set the proper Content-Disposition filename
                 # and never expose the db/docs/ directory directly.
+                # /api/annotations?scope=<scope>&key=<key>
+                # Returns all annotations for a given (target_scope, target_key).
+                if self.path.startswith("/api/annotations"):
+                    from urllib.parse import urlparse, parse_qs
+                    parsed = urlparse(self.path)
+                    if parsed.path == "/api/annotations":
+                        qs = parse_qs(parsed.query)
+                        scope = (qs.get("scope") or [""])[0].strip()
+                        key   = (qs.get("key")   or [""])[0].strip()
+                        _VALID_SCOPES = {
+                            "daily", "project_day", "weekly", "monthly",
+                            "topic", "project_arc", "document",
+                        }
+                        if not scope or scope not in _VALID_SCOPES or not key:
+                            self._reply({"error": "scope and key are required; scope must be one of: " + ", ".join(sorted(_VALID_SCOPES))}, 400)
+                            return
+                        try:
+                            from claudejournal.db import connect as _c
+                            _conn = _c(cfg.db_path)
+                            try:
+                                rows = _conn.execute(
+                                    """SELECT id, target_scope, target_key, annotation_type,
+                                              text, created_at, updated_at, pin_priority, scope_tag
+                                       FROM annotations
+                                       WHERE target_scope = ? AND target_key = ?
+                                       ORDER BY pin_priority DESC, id ASC""",
+                                    (scope, key),
+                                ).fetchall()
+                                self._reply([dict(r) for r in rows])
+                            finally:
+                                _conn.close()
+                        except Exception as exc:
+                            self._reply({"error": str(exc)[:500]}, 500)
+                        return
+
                 if self.path.startswith("/api/docs/") and self.path.endswith("/file"):
                     doc_id = self.path[len("/api/docs/"):-len("/file")]
                     if not doc_id or "/" in doc_id:
@@ -525,6 +560,56 @@ def main(argv: list[str] | None = None) -> int:
                     except Exception as exc:
                         self._reply({"ok": False, "raw": str(exc)}, 500)
                     return
+
+                # POST /api/annotations — create a new annotation.
+                # Body: {scope, key, annotation_type, text, pin_priority?, scope_tag?}
+                if self.path == "/api/annotations":
+                    from datetime import datetime as _dt, timezone as _tz
+                    _VALID_SCOPES = {
+                        "daily", "project_day", "weekly", "monthly",
+                        "topic", "project_arc", "document",
+                    }
+                    _VALID_TYPES = {"append", "correction", "override"}
+                    length = int(self.headers.get("Content-Length") or 0)
+                    raw = self.rfile.read(length).decode("utf-8", "replace") if length else "{}"
+                    try:
+                        payload = _json.loads(raw)
+                        scope      = (payload.get("scope") or "").strip()
+                        key        = (payload.get("key") or "").strip()
+                        ann_type   = (payload.get("annotation_type") or "append").strip()
+                        text       = (payload.get("text") or "").strip()
+                        priority   = int(payload.get("pin_priority") or 1)
+                        scope_tag  = (payload.get("scope_tag") or None)
+                        if scope_tag:
+                            scope_tag = scope_tag.strip() or None
+                        if not scope or scope not in _VALID_SCOPES:
+                            self._reply({"error": "scope must be one of: " + ", ".join(sorted(_VALID_SCOPES))}, 400); return
+                        if not key:
+                            self._reply({"error": "key is required"}, 400); return
+                        if ann_type not in _VALID_TYPES:
+                            self._reply({"error": "annotation_type must be: append, correction, or override"}, 400); return
+                        if not text:
+                            self._reply({"error": "text is required"}, 400); return
+                        now = _dt.now(_tz.utc).isoformat()
+                        from claudejournal.db import connect as _c
+                        _conn = _c(cfg.db_path)
+                        try:
+                            cur = _conn.execute(
+                                """INSERT INTO annotations
+                                   (target_scope, target_key, annotation_type, text,
+                                    created_at, updated_at, pin_priority, scope_tag)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                (scope, key, ann_type, text, now, now, priority, scope_tag),
+                            )
+                            _conn.commit()
+                            new_id = cur.lastrowid
+                        finally:
+                            _conn.close()
+                        self._reply({"ok": True, "id": new_id})
+                    except Exception as exc:
+                        self._reply({"error": str(exc)[:500]}, 500)
+                    return
+
                 self.send_error(404)
 
             def do_DELETE(self):
@@ -543,6 +628,31 @@ def main(argv: list[str] | None = None) -> int:
                         self._reply({"ok": True, "id": doc_id})
                     except ValueError as exc:
                         self._reply({"error": str(exc)}, 404)
+                    except Exception as exc:
+                        self._reply({"error": str(exc)[:500]}, 500)
+                    return
+                # /api/annotations/<id>  — hard-delete an annotation row.
+                if self.path.startswith("/api/annotations/"):
+                    raw_id = self.path[len("/api/annotations/"):]
+                    if not raw_id or "/" in raw_id:
+                        self._reply({"error": "invalid annotation id"}, 400); return
+                    try:
+                        ann_id = int(raw_id)
+                    except ValueError:
+                        self._reply({"error": "annotation id must be an integer"}, 400); return
+                    try:
+                        from claudejournal.db import connect as _c
+                        _conn = _c(cfg.db_path)
+                        try:
+                            result = _conn.execute(
+                                "DELETE FROM annotations WHERE id = ?", (ann_id,)
+                            )
+                            _conn.commit()
+                            if result.rowcount == 0:
+                                self._reply({"error": "annotation not found"}, 404); return
+                        finally:
+                            _conn.close()
+                        self._reply({"ok": True, "id": ann_id})
                     except Exception as exc:
                         self._reply({"error": str(exc)[:500]}, 500)
                     return
@@ -575,6 +685,62 @@ def main(argv: list[str] | None = None) -> int:
                         self._reply({"ok": True, **result})
                     except ValueError as exc:
                         self._reply({"error": str(exc)}, 404)
+                    except Exception as exc:
+                        self._reply({"error": str(exc)[:500]}, 500)
+                    return
+                # /api/annotations/<id>  — edit text, annotation_type, pin_priority,
+                # or scope_tag on an existing annotation. Edits overwrite (no history
+                # in v1). All fields are optional; omitted fields are unchanged.
+                if self.path.startswith("/api/annotations/"):
+                    from datetime import datetime as _dt, timezone as _tz
+                    _VALID_TYPES = {"append", "correction", "override"}
+                    raw_id = self.path[len("/api/annotations/"):]
+                    if not raw_id or "/" in raw_id:
+                        self._reply({"error": "invalid annotation id"}, 400); return
+                    try:
+                        ann_id = int(raw_id)
+                    except ValueError:
+                        self._reply({"error": "annotation id must be an integer"}, 400); return
+                    length = int(self.headers.get("Content-Length") or 0)
+                    raw = self.rfile.read(length).decode("utf-8", "replace") if length else "{}"
+                    try:
+                        payload = _json.loads(raw)
+                        from claudejournal.db import connect as _c
+                        _conn = _c(cfg.db_path)
+                        try:
+                            existing = _conn.execute(
+                                "SELECT id FROM annotations WHERE id = ?", (ann_id,)
+                            ).fetchone()
+                            if not existing:
+                                self._reply({"error": "annotation not found"}, 404); return
+                            updates: list[tuple[str, object]] = []
+                            if "text" in payload:
+                                txt = (payload["text"] or "").strip()
+                                if not txt:
+                                    self._reply({"error": "text cannot be empty"}, 400); return
+                                updates.append(("text", txt))
+                            if "annotation_type" in payload:
+                                at = (payload["annotation_type"] or "").strip()
+                                if at not in _VALID_TYPES:
+                                    self._reply({"error": "annotation_type must be: append, correction, or override"}, 400); return
+                                updates.append(("annotation_type", at))
+                            if "pin_priority" in payload:
+                                updates.append(("pin_priority", int(payload["pin_priority"] or 1)))
+                            if "scope_tag" in payload:
+                                st = (payload["scope_tag"] or "").strip() or None
+                                updates.append(("scope_tag", st))
+                            if updates:
+                                now = _dt.now(_tz.utc).isoformat()
+                                updates.append(("updated_at", now))
+                                set_clause = ", ".join(f"{col} = ?" for col, _ in updates)
+                                vals = [v for _, v in updates] + [ann_id]
+                                _conn.execute(
+                                    f"UPDATE annotations SET {set_clause} WHERE id = ?", vals
+                                )
+                                _conn.commit()
+                        finally:
+                            _conn.close()
+                        self._reply({"ok": True, "id": ann_id})
                     except Exception as exc:
                         self._reply({"error": str(exc)[:500]}, 500)
                     return

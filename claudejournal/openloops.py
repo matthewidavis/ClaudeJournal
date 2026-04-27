@@ -65,6 +65,33 @@ def _age_days(brief_date: str) -> int:
 _MIN_OVERLAP_WORDS = 3   # >= this many shared words → considered resolved
 
 
+def _load_resolved_annotations(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """Load manual resolution annotations (Phase E7) from the annotations table.
+
+    Returns {date: [resolution_text, ...]} for all annotations that carry
+    scope_tag='resolved', target_scope='daily', annotation_type='correction'.
+    If the annotations table does not yet exist (old DB), returns an empty dict.
+
+    Each entry in the list is the annotation text, which by convention is
+    "Friction resolved: <friction text>" — the _overlap heuristic in
+    compute_open_loops() matches it against the friction text.
+    """
+    try:
+        rows = conn.execute(
+            """SELECT target_key, text
+               FROM annotations
+               WHERE target_scope = 'daily'
+                 AND annotation_type = 'correction'
+                 AND scope_tag = 'resolved'"""
+        ).fetchall()
+        result: dict[str, list[str]] = {}
+        for r in rows:
+            result.setdefault(r["target_key"], []).append(r["text"])
+        return result
+    except Exception:
+        return {}  # annotations table not present on old DBs
+
+
 def compute_open_loops(conn: sqlite3.Connection) -> list[dict]:
     """Return a list of open friction items from all session_briefs.
 
@@ -78,6 +105,11 @@ def compute_open_loops(conn: sqlite3.Connection) -> list[dict]:
         still_open   (bool) — always True (we only return open items)
 
     Items are sorted: oldest first within each project.
+
+    Phase E7: also checks for manual resolution annotations (scope_tag='resolved')
+    created via the "Mark resolved" UI button on loops.html. A friction with a
+    matching resolution annotation is filtered out regardless of the automatic
+    heuristic result.
     """
     import json
 
@@ -139,6 +171,11 @@ def compute_open_loops(conn: sqlite3.Connection) -> list[dict]:
             "did":  [d for d in (bj.get("did")  or []) if isinstance(d, str)],
         })
 
+    # Phase E7: load manual resolution annotations indexed by date.
+    # A friction with a matching annotation is treated as resolved, bypassing
+    # the automatic heuristic entirely.
+    resolved_annotations: dict[str, list[str]] = _load_resolved_annotations(conn)
+
     open_loops: list[dict] = []
 
     for brief in briefs:
@@ -149,24 +186,34 @@ def compute_open_loops(conn: sqlite3.Connection) -> list[dict]:
         for friction_text in brief["friction_items"]:
             resolved = False
 
-            # Check all *later* briefs for resolution
-            for later in all_briefs:
-                if later["date"] <= src_date:
-                    continue  # must be strictly later
-
-                # Must share project OR at least one tag
-                same_project = (later["project_id"] == src_pid)
-                tag_overlap = bool(src_tags & set(later["tags"]))
-                if not (same_project or tag_overlap):
-                    continue
-
-                # Check wins and did items for textual overlap
-                for resolution_text in (later["wins"] + later["did"]):
-                    if _overlap(friction_text, resolution_text) >= _MIN_OVERLAP_WORDS:
-                        resolved = True
-                        break
-                if resolved:
+            # Phase E7: check manual resolution annotations first.
+            # Convention: annotation text is "Friction resolved: <friction text>".
+            # We match by word overlap (>= _MIN_OVERLAP_WORDS) against the
+            # annotation text, same heuristic as the automatic resolver.
+            for ann_text in resolved_annotations.get(src_date, []):
+                if _overlap(friction_text, ann_text) >= _MIN_OVERLAP_WORDS:
+                    resolved = True
                     break
+
+            if not resolved:
+                # Automatic heuristic: check all *later* briefs for resolution
+                for later in all_briefs:
+                    if later["date"] <= src_date:
+                        continue  # must be strictly later
+
+                    # Must share project OR at least one tag
+                    same_project = (later["project_id"] == src_pid)
+                    tag_overlap = bool(src_tags & set(later["tags"]))
+                    if not (same_project or tag_overlap):
+                        continue
+
+                    # Check wins and did items for textual overlap
+                    for resolution_text in (later["wins"] + later["did"]):
+                        if _overlap(friction_text, resolution_text) >= _MIN_OVERLAP_WORDS:
+                            resolved = True
+                            break
+                    if resolved:
+                        break
 
             if not resolved:
                 open_loops.append({

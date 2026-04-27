@@ -965,6 +965,16 @@ footer {
   background: var(--chip); padding: 1px 6px; border-radius: 9px;
   font-size: 10px; margin-right: 2px;
 }
+/* "Mark resolved" button on loop items (Phase E7) */
+.loop-resolve-btn {
+  font-size: 11px; font-family: inherit; cursor: pointer;
+  padding: 2px 8px; border-radius: 8px;
+  border: 1px solid var(--ok); background: transparent; color: var(--ok);
+  margin-left: auto;
+  transition: background 0.15s, color 0.15s;
+}
+.loop-resolve-btn:hover { background: var(--ok); color: var(--paper); }
+.loop-resolve-btn:disabled { opacity: 0.5; cursor: default; }
 .loops-empty {
   color: var(--muted); font-style: italic; text-align: center;
   padding: 40px 0; font-size: 15px;
@@ -1125,6 +1135,88 @@ footer {
   color: var(--muted); font-style: italic; text-align: center;
   padding: 40px 0; font-size: 15px;
 }
+
+/* ── Annotations (Phase E) ───────────────────────────────────────────── */
+/* Annotate button — lives next to the inspect chips */
+.annotate-btn {
+  font-size: 11px; font-family: inherit; cursor: pointer;
+  padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--rule); background: transparent;
+  color: var(--muted);
+  transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.annotate-btn:hover { border-color: var(--accent-soft); color: var(--accent); }
+/* Annotation form panel */
+.annotation-form {
+  margin: 10px 0 6px; padding: 12px 14px;
+  border: 1px solid var(--rule); border-radius: 6px;
+  background: var(--chip); display: none;
+}
+.annotation-form.open { display: block; }
+.annotation-form textarea {
+  width: 100%; box-sizing: border-box;
+  min-height: 72px; padding: 8px 10px;
+  font-family: inherit; font-size: 13px; line-height: 1.5;
+  border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--paper); color: var(--fg); resize: vertical;
+}
+.annotation-form textarea:focus { outline: none; border-color: var(--accent-soft); }
+.annotation-form-row {
+  display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap;
+}
+.annotation-form select {
+  font-family: inherit; font-size: 12px; padding: 4px 6px;
+  border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--paper); color: var(--fg); cursor: pointer;
+}
+.annotation-save-btn {
+  font-size: 12px; font-family: inherit; cursor: pointer;
+  padding: 4px 12px; border-radius: 6px;
+  border: 1px solid var(--accent); background: var(--accent); color: var(--paper);
+}
+.annotation-save-btn:hover { background: var(--accent-soft); border-color: var(--accent-soft); }
+.annotation-cancel-btn {
+  font-size: 12px; font-family: inherit; cursor: pointer;
+  padding: 4px 10px; border-radius: 6px;
+  border: 1px solid var(--rule); background: transparent; color: var(--muted);
+}
+.annotation-cancel-btn:hover { color: var(--fg); }
+.annotation-form-msg { font-size: 11px; color: var(--muted); margin-left: auto; }
+/* Rendered annotation blocks (below AI prose) */
+.annotations-block { margin: 14px 0 6px; display: flex; flex-direction: column; gap: 8px; }
+.annotation-item {
+  padding: 9px 13px;
+  border-left: 3px solid var(--rule); border-radius: 0 4px 4px 0;
+  background: var(--chip); font-size: 13px; line-height: 1.5;
+  position: relative;
+}
+.annotation-item.type-append  { border-left-color: var(--ok); }
+.annotation-item.type-correction { border-left-color: var(--warn); }
+.annotation-item.type-override { border-left-color: var(--accent); }
+.annotation-item-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  font-weight: 600; color: var(--muted); margin-bottom: 4px;
+}
+.annotation-item.type-append    .annotation-item-label { color: var(--ok); }
+.annotation-item.type-correction .annotation-item-label { color: var(--warn); }
+.annotation-item.type-override  .annotation-item-label { color: var(--accent); }
+.annotation-item-text { color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+.annotation-contradiction-warn {
+  display: inline-block; font-size: 10px;
+  color: var(--warn); margin-left: 6px; vertical-align: middle;
+  cursor: help;
+}
+.annotation-delete-btn {
+  position: absolute; top: 7px; right: 8px;
+  font-size: 10px; font-family: inherit; cursor: pointer;
+  padding: 2px 6px; border-radius: 4px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--muted); opacity: 0;
+  transition: opacity 0.15s;
+}
+.annotation-item:hover .annotation-delete-btn { opacity: 1; }
+.annotation-delete-btn:hover { border-color: var(--warn); color: var(--warn); }
 """
 
 
@@ -1209,6 +1301,123 @@ INSPECT_WIDGET = """
     if (empty) {
       if (visible === 0 && q) empty.removeAttribute('hidden');
       else empty.setAttribute('hidden', '');
+    }
+  });
+})();
+</script>
+"""
+
+
+ANNOTATION_WIDGET = """
+<script>
+(function() {
+  // Annotation CRUD widget — handles the inline "annotate" form on daily entries.
+  // Called by render_day_entry via the annotate button in the inspect row.
+
+  function _esc(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // Build an annotation-item HTML string from a record
+  function _annotationHtml(ann) {
+    const label = {append: 'append', correction: 'correction', override: 'override'}[ann.annotation_type] || ann.annotation_type;
+    const warnHtml = ann._contradiction
+      ? '<span class="annotation-contradiction-warn" title="This annotation may not be reflected in the current AI prose. Re-run the pipeline to regenerate.">&#9888;</span>'
+      : '';
+    return (
+      '<div class="annotation-item type-' + _esc(ann.annotation_type) + '" data-ann-id="' + ann.id + '">' +
+        '<button class="annotation-delete-btn" data-ann-id="' + ann.id + '" title="Delete annotation">delete</button>' +
+        '<div class="annotation-item-label">' + _esc(label) + warnHtml + '</div>' +
+        '<div class="annotation-item-text">' + _esc(ann.text) + '</div>' +
+      '</div>'
+    );
+  }
+
+  // Load and render annotations for an entry
+  function loadAnnotations(dateKey, scope, container) {
+    fetch('/api/annotations?scope=' + encodeURIComponent(scope) + '&key=' + encodeURIComponent(dateKey))
+      .then(function(r) { return r.json(); })
+      .then(function(list) {
+        if (!Array.isArray(list)) return;
+        container.innerHTML = list.length
+          ? list.map(_annotationHtml).join('')
+          : '';
+        // Wire delete buttons
+        container.querySelectorAll('.annotation-delete-btn').forEach(function(btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            var id = btn.dataset.annId;
+            if (!confirm('Delete this annotation?')) return;
+            fetch('/api/annotations/' + id, {method: 'DELETE'})
+              .then(function() { loadAnnotations(dateKey, scope, container); });
+          });
+        });
+      })
+      .catch(function(err) { console.warn('annotation load failed', err); });
+  }
+
+  // Wire all annotate buttons
+  document.querySelectorAll('.annotate-btn').forEach(function(btn) {
+    var entryEl = btn.closest('article.entry');
+    if (!entryEl) return;
+    var dateKey = entryEl.id;   // entry id = YYYY-MM-DD for daily entries
+    var scope   = btn.dataset.scope || 'daily';
+    var formEl  = entryEl.querySelector('.annotation-form');
+    var containerEl = entryEl.querySelector('.annotations-block');
+    if (!formEl || !containerEl) return;
+
+    // Initial load
+    loadAnnotations(dateKey, scope, containerEl);
+
+    // Toggle form open/close
+    btn.addEventListener('click', function() {
+      var isOpen = formEl.classList.toggle('open');
+      btn.textContent = isOpen ? 'close' : 'annotate';
+    });
+
+    // Cancel
+    var cancelBtn = formEl.querySelector('.annotation-cancel-btn');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function() {
+        formEl.classList.remove('open');
+        btn.textContent = 'annotate';
+        formEl.querySelector('textarea').value = '';
+        var msgEl = formEl.querySelector('.annotation-form-msg');
+        if (msgEl) msgEl.textContent = '';
+      });
+    }
+
+    // Save
+    var saveBtn = formEl.querySelector('.annotation-save-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', function() {
+        var ta  = formEl.querySelector('textarea');
+        var sel = formEl.querySelector('select');
+        var msg = formEl.querySelector('.annotation-form-msg');
+        var text = (ta ? ta.value : '').trim();
+        var ann_type = sel ? sel.value : 'append';
+        if (!text) { if (msg) msg.textContent = 'Text required.'; return; }
+        if (msg) msg.textContent = 'Saving…';
+        fetch('/api/annotations', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({scope: scope, key: dateKey, annotation_type: ann_type, text: text}),
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+          if (res.ok) {
+            if (ta) ta.value = '';
+            if (msg) msg.textContent = 'Saved.';
+            loadAnnotations(dateKey, scope, containerEl);
+            setTimeout(function() { if (msg) msg.textContent = ''; }, 2000);
+          } else {
+            if (msg) msg.textContent = 'Error: ' + (res.error || 'unknown');
+          }
+        })
+        .catch(function(err) { if (msg) msg.textContent = 'Network error.'; console.warn(err); });
+      });
     }
   });
 })();
@@ -2673,6 +2882,7 @@ def layout(title: str, body: str, anchor_base: str = "./") -> str:
 <div class="wrap">{body}</div>
 {FILTER_WIDGET}
 {INSPECT_WIDGET}
+{ANNOTATION_WIDGET}
 {REFRESH_WIDGET}
 {CHAT_WIDGET}
 {LIBRARY_WIDGET}
@@ -3163,6 +3373,39 @@ def _render_echo_banner(echoes: dict, anchor_base: str, date: str) -> str:
     )
 
 
+def _render_annotation_block(annotations: list[dict]) -> str:
+    """Render pinned user annotations below the AI prose.
+
+    Each annotation is rendered verbatim (no post_process linkification — this
+    is the user's voice). The _contradiction flag (set by the render-time
+    contradiction guard in render.py) adds a warning icon when the AI prose
+    may not reflect the correction.
+    """
+    if not annotations:
+        return ""
+    items: list[str] = []
+    for ann in annotations:
+        label = ann.get("annotation_type", "append")
+        text  = ann.get("text", "")
+        ann_id = ann.get("id", "")
+        has_contra = bool(ann.get("_contradiction"))
+        warn_html = (
+            '<span class="annotation-contradiction-warn" '
+            'title="This annotation may not be reflected in the current AI prose. '
+            'Re-run the pipeline to regenerate.">&#9888;</span>'
+            if has_contra else ""
+        )
+        items.append(
+            f'<div class="annotation-item type-{esc(label)}" data-ann-id="{esc(str(ann_id))}">'
+            f'  <button class="annotation-delete-btn" data-ann-id="{esc(str(ann_id))}" '
+            f'          title="Delete annotation">delete</button>'
+            f'  <div class="annotation-item-label">{esc(label)}{warn_html}</div>'
+            f'  <div class="annotation-item-text">{esc(text)}</div>'
+            f'</div>'
+        )
+    return f'<div class="annotations-block">{"".join(items)}</div>'
+
+
 def render_day_entry(date: str, narration: str, mood: str,
                      counts_row: dict, prompts: list[dict], snippets: list[dict],
                      files: list[dict], briefs: list[dict] | None,
@@ -3179,7 +3422,8 @@ def render_day_entry(date: str, narration: str, mood: str,
                      known_topics: list[tuple[str, str]] | None = None,
                      open_loops_count: int = 0,
                      entities: list[dict] | None = None,
-                     echoes: dict | None = None) -> str:
+                     echoes: dict | None = None,
+                     annotations: list[dict] | None = None) -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed.
 
     open_loops_count: number of open friction loops older than 7 days that
@@ -3190,6 +3434,11 @@ def render_day_entry(date: str, narration: str, mood: str,
       for this date. When provided and non-empty, a subtle "memory" banner is
       rendered between the entry header and body. Omit (or pass None) for
       no banner.
+
+    annotations: list of annotation dicts (from the annotations table) for this
+      date. Each may carry a _contradiction boolean flag (set by the render-time
+      contradiction guard) that triggers a warning icon in the UI. Annotation
+      text is rendered verbatim — never passed through post_process linkification.
     """
     pretty = _pretty_date_safe(date)
     known_docs = known_docs or []
@@ -3230,6 +3479,32 @@ def render_day_entry(date: str, narration: str, mood: str,
     # Temporal recall (echo) banner — only shown when echoes exist
     echo_html = _render_echo_banner(echoes or {}, anchor_base=anchor_base, date=date)
 
+    # Annotation blocks (below AI prose) — rendered from pre-loaded annotation rows.
+    # The JS ANNOTATION_WIDGET also dynamically re-loads/updates these on save/delete.
+    ann_list = annotations or []
+    annotations_html = _render_annotation_block(ann_list)
+
+    # Inline annotation form — always present in DOM, toggled open by JS.
+    annotate_btn = (
+        f'<button class="annotate-btn" data-scope="daily" '
+        f'title="Add or view corrections for this entry">annotate</button>'
+    )
+    annotation_form = (
+        f'<div class="annotation-form">'
+        f'  <textarea placeholder="Your correction or note for this entry…"></textarea>'
+        f'  <div class="annotation-form-row">'
+        f'    <select title="Annotation type">'
+        f'      <option value="append">append</option>'
+        f'      <option value="correction">correction</option>'
+        f'      <option value="override">override</option>'
+        f'    </select>'
+        f'    <button class="annotation-save-btn">Save</button>'
+        f'    <button class="annotation-cancel-btn">Cancel</button>'
+        f'    <span class="annotation-form-msg"></span>'
+        f'  </div>'
+        f'</div>'
+    )
+
     projects_attr = ",".join(projects_in_day or [])
     week_attr = _iso_week_of(date)
     year = _pretty_date_year(date)
@@ -3249,6 +3524,9 @@ def render_day_entry(date: str, narration: str, mood: str,
         f'  </header>'
         f'  {echo_html}'
         f'  {body}'
+        f'  {annotations_html}'
+        f'  {annotation_form}'
+        f'  {annotate_btn}'
         f'  {activity}'
         f'</article>'
     )
@@ -3836,13 +4114,22 @@ def render_loops_page(open_loops: list[dict], anchor_base: str = "./") -> str:
                     + "".join(f"<code>{esc(t)}</code>" for t in tags[:5])
                     + "</span>"
                 )
+            # data-date and data-friction drive the "Mark resolved" button (E7)
+            friction_escaped = esc(loop["friction"])
+            # Store friction text as a data attribute for the JS handler.
+            # JSON-encode so special chars survive the HTML attribute.
+            import json as _json
+            friction_json = esc(_json.dumps(loop["friction"]))
             items_html.append(
-                f'<div class="loop-item">'
-                f'  <div class="loop-text">{esc(loop["friction"])}</div>'
+                f'<div class="loop-item" data-date="{esc(date_str)}" data-friction={friction_json}>'
+                f'  <div class="loop-text">{friction_escaped}</div>'
                 f'  <div class="loop-footer">'
                 f'    <span class="loop-age">{esc(age_str)}</span>'
                 f'    <span class="loop-date">{esc(date_str)}</span>'
                 f'    {tag_html}'
+                f'    <button class="loop-resolve-btn" '
+                f'            title="Mark this friction as manually resolved">'
+                f'      resolved</button>'
                 f'  </div>'
                 f'</div>'
             )
@@ -3854,12 +4141,63 @@ def render_loops_page(open_loops: list[dict], anchor_base: str = "./") -> str:
             f'</div>'
         )
 
+    # Inline JS for the "Mark resolved" buttons (Phase E7).
+    # POSTs a 'correction' annotation with scope_tag='resolved' on the
+    # originating daily entry. On success, hides the loop item immediately.
+    # The loops page will correctly exclude this item on next re-render.
+    resolve_js = (
+        '<script>'
+        '(function() {'
+        '  document.querySelectorAll(".loop-resolve-btn").forEach(function(btn) {'
+        '    btn.addEventListener("click", function() {'
+        '      var item = btn.closest(".loop-item");'
+        '      if (!item) return;'
+        '      var date = item.dataset.date || "";'
+        '      var frictionRaw = item.dataset.friction || "";'
+        '      var friction;'
+        '      try { friction = JSON.parse(frictionRaw); } catch(e) { friction = frictionRaw; }'
+        '      if (!date || !friction) return;'
+        '      btn.disabled = true;'
+        '      btn.textContent = "saving…";'
+        '      fetch("/api/annotations", {'
+        '        method: "POST",'
+        '        headers: {"Content-Type": "application/json"},'
+        '        body: JSON.stringify({'
+        '          scope: "daily", key: date,'
+        '          annotation_type: "correction",'
+        '          scope_tag: "resolved",'
+        '          text: "Friction resolved: " + friction'
+        '        })'
+        '      })'
+        '      .then(function(r) { return r.json(); })'
+        '      .then(function(res) {'
+        '        if (res.ok) {'
+        '          item.style.transition = "opacity 0.3s";'
+        '          item.style.opacity = "0";'
+        '          setTimeout(function() { item.remove(); }, 320);'
+        '        } else {'
+        '          btn.disabled = false;'
+        '          btn.textContent = "resolved";'
+        '          alert("Error: " + (res.error || "unknown"));'
+        '        }'
+        '      })'
+        '      .catch(function(e) {'
+        '        btn.disabled = false;'
+        '        btn.textContent = "resolved";'
+        '        alert("Network error. Is the server running?");'
+        '      });'
+        '    });'
+        '  });'
+        '})();'
+        '</script>'
+    )
     return (
         f'<div class="loops-page">'
         f'  <h2>Open Loops</h2>'
         f'  <div class="loops-meta">{esc(meta)}</div>'
         f'  {"".join(groups_html)}'
         f'</div>'
+        f'{resolve_js}'
     )
 
 

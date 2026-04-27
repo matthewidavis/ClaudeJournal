@@ -45,14 +45,60 @@ def _load_briefs_for_day(conn: sqlite3.Connection, date: str,
     return out
 
 
+def _load_annotations_for_day(conn: sqlite3.Connection, date: str) -> list[dict]:
+    """Load user-authored annotations for a daily narration (Phase E).
+
+    Returns annotation rows ordered by pin_priority DESC, id ASC so that
+    high-priority corrections always appear first in the prompt block.
+    Only 'daily' scope annotations are returned — project_day, topic, arc,
+    weekly, and monthly scope wiring is deferred to a follow-up plan (E5).
+    """
+    try:
+        rows = conn.execute(
+            """SELECT id, annotation_type, text, pin_priority, scope_tag
+               FROM annotations
+               WHERE target_scope = 'daily' AND target_key = ?
+               ORDER BY pin_priority DESC, id ASC""",
+            (date,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        # annotations table may not exist on old DBs — safe to skip
+        return []
+
+
+def _annotations_hash_contribution(annotations: list[dict]) -> bytes:
+    """Stable bytes over the annotation list for inclusion in the input hash.
+
+    Sorted by annotation id (stable primary key) so insertion order cannot
+    change the hash. Any change to text, type, or priority of an existing
+    annotation causes a hash change, triggering re-narration.
+    """
+    import hashlib as _hl
+    h = _hl.sha256()
+    for ann in sorted(annotations, key=lambda a: a.get("id") or 0):
+        h.update(str(ann.get("id", "")).encode())
+        h.update(b"\x00")
+        h.update((ann.get("annotation_type") or "").encode())
+        h.update(b"\x00")
+        h.update((ann.get("text") or "").encode("utf-8", errors="replace"))
+        h.update(b"\x00")
+        h.update(str(ann.get("pin_priority") or 1).encode())
+        h.update(b"\x01")
+    return h.digest()
+
+
 def _narration_input_hash(briefs: list[dict], scope: str,
                           project_id: str | None = None,
-                          docs: list[dict] | None = None) -> str:
-    """Stable hash over the briefs + docs that feed a narration. Changes
-    when a new brief lands for the day, when an existing brief's
-    input_hash shifts (session grew / user edited prompts), or when a
-    document is added/updated/removed on this date. Cascades invalidation
-    up from briefs and docs alike."""
+                          docs: list[dict] | None = None,
+                          annotations: list[dict] | None = None) -> str:
+    """Stable hash over the briefs + docs + annotations that feed a narration.
+
+    Changes when a new brief lands for the day, when an existing brief's
+    input_hash shifts (session grew / user edited prompts), when a document
+    is added/updated/removed on this date, or when a user annotation is
+    added, edited, or deleted. Cascades invalidation up from all inputs.
+    """
     h = hashlib.sha256()
     h.update(NARRATION_PROMPT_VERSION.encode())
     h.update(scope.encode())
@@ -70,6 +116,9 @@ def _narration_input_hash(briefs: list[dict], scope: str,
     if docs:
         h.update(b"\x02docs\x02")
         h.update(docs_summary_hash_contribution(docs))
+    if annotations:
+        h.update(b"\x03annotations\x03")
+        h.update(_annotations_hash_contribution(annotations))
     return h.hexdigest()[:16]
 
 
@@ -172,7 +221,12 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                     try: progress(done, total, f"daily {d}")
                     except Exception: pass
                 docs_for_day = docs_added_on(conn, d)
-                day_hash = _narration_input_hash(all_briefs, "daily", docs=docs_for_day)
+                # Phase E: load user annotations — included in hash so any
+                # change to corrections triggers re-narration automatically.
+                annotations_for_day = _load_annotations_for_day(conn, d)
+                day_hash = _narration_input_hash(all_briefs, "daily",
+                                                 docs=docs_for_day,
+                                                 annotations=annotations_for_day)
                 if not force and _already_current(conn, "daily", key, day_hash):
                     stats["skipped"] += 1
                     if verbose:
@@ -187,10 +241,12 @@ def run(cfg: Config, *, narrator: Narrator | None = None,
                         briefs=all_briefs, prior_entry=prior,
                         threads=threads, anchors=anchors,
                         docs_added=docs_for_day,
+                        annotations=annotations_for_day,
                     )
                     if verbose:
                         pnames = sorted({b["_project_name"] for b in all_briefs})
-                        print(f"  daily {d}  [{len(all_briefs)} briefs across {len(pnames)}: {', '.join(pnames)}]")
+                        ann_note = f" + {len(annotations_for_day)} annotation(s)" if annotations_for_day else ""
+                        print(f"  daily {d}  [{len(all_briefs)} briefs across {len(pnames)}: {', '.join(pnames)}]{ann_note}")
                     try:
                         res = narrator.narrate_day(ninp, dry_run=dry_run)
                     except Exception as exc:

@@ -336,7 +336,8 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
                        known_topics: list[tuple[str, str]] | None = None,
                        open_loops_by_project: dict[str, int] | None = None,
                        entities_by_date: dict[str, list[str]] | None = None,
-                       echoes_by_date: dict[str, dict] | None = None) -> list[str]:
+                       echoes_by_date: dict[str, dict] | None = None,
+                       annotations_by_date: dict[str, list[dict]] | None = None) -> list[str]:
     """Produce the feed entries + week/month breaks interleaved, newest first.
 
     open_loops_by_project: {project_id: count_of_open_loops_older_than_7d}
@@ -349,6 +350,9 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
       temporal.compute_all_echoes(). Passed to render_day_entry() so that days
       with temporal signals show the subtle echo banner. Dates absent from the
       dict have no echoes and render no banner.
+    annotations_by_date: {date: [annotation_dict, ...]} pre-built in render_site()
+      from the annotations table (scope='daily'). Each annotation may have a
+      _contradiction flag set by the render-time contradiction guard (E6).
     """
     weekly = _weekly_rollups(conn)
     monthly = _monthly_rollups(conn)
@@ -365,6 +369,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     open_loops_by_project = open_loops_by_project or {}
     entities_by_date = entities_by_date or {}
     echoes_by_date = echoes_by_date or {}
+    annotations_by_date = annotations_by_date or {}
 
     # Build a map of date -> project_ids active that day for banner lookup.
     # We use the events table since that's already available without extra queries.
@@ -426,6 +431,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             open_loops_count=day_open_loops,
             entities=entities_by_date.get(date, []),
             echoes=echoes_by_date.get(date),
+            annotations=annotations_by_date.get(date, []),
         ))
         # Doc entries for this date — emitted right after the day so they
         # cluster chronologically. The Library view chip keeps them visible
@@ -768,12 +774,68 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     _echoes_by_date = _compute_all_echoes(conn, dates)
     stats["echoes"] = len(_echoes_by_date)
 
+    # ---------- Pre-compute annotations for feed entries (Phase E) ----------
+    # Load all 'daily' scope annotations once; group by target_key (date).
+    # Apply the render-time contradiction guard: for 'correction' annotations,
+    # flag _contradiction=True when the annotation's significant words are
+    # absent from the current narration prose (advisory warning only).
+    _annotations_by_date: dict[str, list[dict]] = {}
+    try:
+        _ann_rows = conn.execute(
+            """SELECT id, target_scope, target_key, annotation_type, text,
+                      created_at, updated_at, pin_priority, scope_tag
+               FROM annotations
+               WHERE target_scope = 'daily'
+               ORDER BY pin_priority DESC, id ASC"""
+        ).fetchall()
+        for _r in _ann_rows:
+            _ann = dict(_r)
+            _ann["_contradiction"] = False
+            _annotations_by_date.setdefault(_r["target_key"], []).append(_ann)
+    except Exception:
+        pass  # annotations table may not exist yet on old DBs
+
+    # Contradiction guard: for correction-type annotations, check keyword overlap
+    # with the narration prose for the same date. If the significant words in the
+    # correction do not appear in the prose, flag _contradiction=True.
+    # This is advisory (not blocking) — implemented simply with word-set overlap.
+    def _sig_words(text: str) -> set[str]:
+        import re as _re
+        _STOP = frozenset({
+            "the", "and", "that", "this", "with", "from", "have", "been", "were",
+            "when", "what", "which", "where", "while", "also", "into", "then",
+            "than", "they", "them", "their", "some", "just", "more", "very",
+            "will", "would", "could", "should", "does", "doing", "done", "used",
+            "using", "make", "made", "need", "needs", "needed", "for", "are",
+            "was", "had", "has", "its", "all", "out", "one", "but", "not",
+        })
+        tokens = _re.findall(r"[a-zA-Z][a-zA-Z0-9_'-]*", text.lower())
+        return {t for t in tokens if len(t) >= 4 and t not in _STOP}
+
+    for _date, _ann_list in _annotations_by_date.items():
+        # Load narration prose for this date
+        _narr_row = conn.execute(
+            "SELECT prose FROM narrations WHERE scope='daily' AND key=?", (_date,)
+        ).fetchone()
+        _narr_prose = (_narr_row["prose"] if _narr_row else "") or ""
+        _prose_words = _sig_words(_narr_prose)
+        for _ann in _ann_list:
+            if _ann.get("annotation_type") == "correction" and _narr_prose:
+                _ann_words = _sig_words(_ann.get("text", ""))
+                if _ann_words:
+                    # If fewer than half the annotation's significant words appear
+                    # in the prose, flag as potentially contradicting.
+                    _overlap_frac = len(_ann_words & _prose_words) / len(_ann_words)
+                    _ann["_contradiction"] = _overlap_frac < 0.5
+    stats["annotations"] = sum(len(v) for v in _annotations_by_date.values())
+
     entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
                                  tags_by_date=tags_by_date,
                                  known_topics=known_topics_all,
                                  open_loops_by_project=_open_loops_by_project,
                                  entities_by_date=entities_by_date,
-                                 echoes_by_date=_echoes_by_date)
+                                 echoes_by_date=_echoes_by_date,
+                                 annotations_by_date=_annotations_by_date)
     # Shared filter-data bundle — the main feed AND every standalone
     # deep-link page (weekly/monthly/topic/arc/doc) uses the same chip
     # bar, so they all pass the same filter data into render_site_header.
