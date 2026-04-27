@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime
 from typing import Iterable
 
@@ -77,6 +78,21 @@ body {
 .filter-chip.mode:hover { background: var(--accent-soft); color: var(--paper); border-color: var(--accent-soft); }
 .filter-chip.mode.active { background: var(--accent); color: var(--paper); border-color: var(--accent); }
 .filter-chip.mode.active:hover { background: #6f3916; }
+
+/* Clear chip — sits at the end of Row 0. Distinct from filter-state chips:
+   dark ink foreground on paper, outlined. On the main feed it resets
+   filters in place; on deep-link pages it navigates to the feed. Same
+   visual treatment either way so it reads as one consistent affordance. */
+.filter-chip.home {
+  border-color: var(--fg);
+  color: var(--fg);
+  background: transparent;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.filter-chip.home:hover {
+  background: var(--fg); color: var(--paper); border-color: var(--fg);
+}
 .filter-empty {
   text-align: center; color: var(--muted); font-style: italic;
   padding: 40px 20px; font-size: 15px;
@@ -1057,6 +1073,15 @@ FILTER_WIDGET = """
     // entry-type toggle (Daily/Weekly/Monthly). Selecting a view chip is
     // exclusive — clicking the active one reverts to 'all'. ---
     if (modesRow) {
+      const anchorBase = window.__ANCHOR_BASE__ || './';
+      const onHomePage = (anchorBase === './' || anchorBase === '');
+      const filtered = !!state.axis || state.views.size > 0;
+      // Clear chip — sits at the end of the modes row. On deep-link pages
+      // it's always present and navigates back to the main feed. On the
+      // main feed itself it's only present when something is filtered;
+      // clicking it resets all filters in place. Pristine main feed = no
+      // chip (no-op).
+      const showClear = !onHomePage || filtered;
       const findActive = state.axis === 'search';
       modesRow.appendChild(makeChip(AXIS_LABELS.search, 'mode axis-search' + (findActive ? ' active' : ''), () => {
         if (state.axis === 'search') { state.axis = null; state.value = null; state.mode = null; }
@@ -1075,6 +1100,18 @@ FILTER_WIDGET = """
           apply();
         }));
       });
+      if (showClear) {
+        modesRow.appendChild(makeChip('Clear', 'home', () => {
+          if (onHomePage) {
+            state.axis = null; state.value = null; state.mode = null;
+            state.views.clear();
+            saveViews(state.views);
+            apply();
+          } else {
+            window.location.href = anchorBase + 'index.html';
+          }
+        }));
+      }
     }
 
     // --- Axis row: always present, stable positions. Click toggles active. ---
@@ -1166,15 +1203,22 @@ FILTER_WIDGET = """
       const onClick = (x) => {
         if (state.mode === 'overview') {
           // Navigate to the static page rather than filtering the feed.
+          // anchor_base must be prefixed — on deep-link pages (e.g. a
+          // project arc) the current URL is /projects/<name>/, and a
+          // bare 'projects/<other>/index.html' would resolve to
+          // /projects/<name>/projects/<other>/ (nested). Using
+          // __ANCHOR_BASE__ makes the href site-root-relative regardless
+          // of which page the user is on.
+          const base = window.__ANCHOR_BASE__ || './';
           const key = x.key || x;
           let href = '';
           if (state.axis === 'topic') {
             // Find the slug from topic_pages_map if available, else mangle key.
             const slugMap = data.topic_pages_map || {};
             const slug = slugMap[key] || key.toLowerCase().replace(/[^\w-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
-            href = 'topics/' + slug + '.html';
+            href = base + 'topics/' + slug + '.html';
           } else {
-            href = 'projects/' + encodeURIComponent(key) + '/index.html';
+            href = base + 'projects/' + encodeURIComponent(key) + '/index.html';
           }
           window.location.href = href;
         } else {
@@ -1269,6 +1313,10 @@ FILTER_WIDGET = """
       ? new RegExp('(' + escRegex(state.value.trim()) + ')', 'gi') : null;
 
     let anyShown = 0;
+    // Deep-link pages (project arcs, topic pages, doc pages) reuse the site
+    // header but have no <main id="feed"> — there's nothing to filter, so
+    // bail out early and leave the chip widget purely navigational.
+    if (!feed) return;
     const entries = feed.querySelectorAll('article.entry');
     // Empty selection = show all — so the user can deselect every chip and
     // land on the same view as selecting every chip. Intuition wins over
@@ -2381,7 +2429,7 @@ def layout(title: str, body: str, anchor_base: str = "./") -> str:
 <style>{CSS}</style>
 </head>
 <body>
-<script>window.__ANCHOR_BASE__ = {html.escape(repr(anchor_base))};</script>
+<script>window.__ANCHOR_BASE__ = {json.dumps(anchor_base)};</script>
 <div id="top-actions">{ASK_BUTTON}{LIBRARY_BUTTON}</div>
 <div class="wrap">{body}</div>
 {FILTER_WIDGET}
@@ -2858,6 +2906,53 @@ def render_month_break(year_month: str, rollup_prose: str, anchor_base: str = ".
     )
 
 
+def render_site_header(*, site_title: str, subtitle: str,
+                       projects: list[str] | None = None,
+                       weeks: list[dict] | None = None,
+                       months: list[dict] | None = None,
+                       moods: list[dict] | None = None,
+                       learnings: list[dict] | None = None,
+                       years: list[dict] | None = None,
+                       tags: list[dict] | None = None,
+                       topic_pages: list[str] | None = None,
+                       topic_pages_map: dict[str, str] | None = None,
+                       arc_pages: list[str] | None = None) -> str:
+    """The full site header — site title, subtitle, and filter bar — plus
+    the window.__FILTERS__ data script. Used by the main feed page AND by
+    every standalone deep-link page (weekly / monthly / topic / arc / doc)
+    so navigation is consistent: the filter bar IS the navigation, and
+    users return to any filtered view by clicking chips rather than
+    following a back-arrow breadcrumb.
+
+    Returns the data_script + header HTML as one string ready to prepend
+    to the page body.
+    """
+    import json as _json
+    has_any = bool(projects or weeks or months or moods or learnings or years or tags)
+    filter_bar = ""
+    if has_any:
+        filter_bar = (
+            '<div class="filter-bar">'
+            '  <div class="filter-row filter-modes" id="filter-modes"></div>'
+            '  <div class="filter-row filter-axes" id="filter-axes"></div>'
+            '  <div class="filter-row filter-options" id="filter-options"></div>'
+            '</div>'
+        )
+    data_script = (
+        f'<script>\n'
+        f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or [], "topic_pages": topic_pages or [], "topic_pages_map": topic_pages_map or {}, "arc_pages": arc_pages or []})};\n'
+        f'</script>'
+    )
+    head = (
+        f'<header class="site-head">'
+        f'  <h1>{esc(site_title)}</h1>'
+        f'  <div class="sub">{esc(subtitle)}</div>'
+        f'  {filter_bar}'
+        f'</header>'
+    )
+    return data_script + head
+
+
 def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
                 projects: list[str] | None = None,
                 weeks: list[dict] | None = None,
@@ -2877,31 +2972,21 @@ def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
     topic_pages_map: {tag: slug} map so the JS can build correct hrefs.
     arc_pages: list of project names that have arc pages.
     """
-    import json as _json
-    has_any = bool(projects or weeks or months or moods or learnings or years or tags)
-    if has_any:
-        filter_bar = (
-            '<div class="filter-bar">'
-            '  <div class="filter-row filter-modes" id="filter-modes"></div>'
-            '  <div class="filter-row filter-axes" id="filter-axes"></div>'
-            '  <div class="filter-row filter-options" id="filter-options"></div>'
-            '</div>'
-        )
-    data_script = (
-        f'<script>\n'
-        f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or [], "topic_pages": topic_pages or [], "topic_pages_map": topic_pages_map or {}, "arc_pages": arc_pages or []})};\n'
-        f'</script>'
+    header = render_site_header(
+        site_title=site_title, subtitle=subtitle,
+        projects=projects, weeks=weeks, months=months, moods=moods,
+        learnings=learnings, years=years, tags=tags,
+        topic_pages=topic_pages, topic_pages_map=topic_pages_map,
+        arc_pages=arc_pages,
     )
-    head = (
-        f'<header class="site-head">'
-        f'  {crumb_html}'
-        f'  <h1>{esc(site_title)}</h1>'
-        f'  <div class="sub">{esc(subtitle)}</div>'
-        f'  {filter_bar}'
-        f'</header>'
+    # Project-page crumb (optional) goes between the site header and the
+    # feed. Crumbs on deep-link pages (weekly / monthly / topic / arc /
+    # doc) were removed — the filter bar is the navigation.
+    crumb_block = (
+        f'<div class="project-crumb">{crumb_html}</div>' if crumb_html else ""
     )
     body_entries = "\n".join(entries_html) if entries_html else '<p style="text-align:center;color:var(--muted);">No entries yet.</p>'
-    return data_script + head + '<main id="feed">' + body_entries + '</main><div class="filter-empty" id="filter-empty" style="display:none;">No entries match this filter.</div><footer>claudejournal</footer>'
+    return header + crumb_block + '<main id="feed">' + body_entries + '</main><div class="filter-empty" id="filter-empty" style="display:none;">No entries match this filter.</div><footer>claudejournal</footer>'
 
 
 def render_chat_page() -> str:

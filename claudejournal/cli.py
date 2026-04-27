@@ -306,6 +306,15 @@ def main(argv: list[str] | None = None) -> int:
                 self.send_header("Cross-Origin-Opener-Policy", "same-origin")
                 self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
                 self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+                # Disable browser caching entirely. The site's HTML is
+                # rebuilt by every pipeline cycle; cached pages go stale
+                # the moment a new render lands. The performance cost of
+                # skipping cache is negligible for a single-user local
+                # journal, and it eliminates an entire class of "is this
+                # a bug or stale cache" confusion during development.
+                self.send_header("Cache-Control", "no-store, must-revalidate")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Expires", "0")
                 super().end_headers()
 
             def do_GET(self):

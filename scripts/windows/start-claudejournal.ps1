@@ -1,5 +1,5 @@
 param(
-    [int]$Port = 8888,
+    [int]$Port = 7654,
     [switch]$SkipRun
 )
 

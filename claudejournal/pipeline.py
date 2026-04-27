@@ -112,8 +112,25 @@ def run_all(cfg: Config, *,
     stats["topic_summary"] = topic_stats
     _tick("topic_summary", 1, 1, "done")
 
+    # Interludes run BEFORE narrate so today's quiet-day placeholder lands
+    # immediately on the first pipeline pass — even if narrate is still
+    # working through older backlog. The interlude loop processes
+    # newest-first; narrate processes oldest-first; by the time their
+    # ranges overlap, narrate has already filled in the older dates and
+    # the interlude pass naturally skips them. The render layer always
+    # prefers a real narration over an interlude when both exist, so the
+    # interlude is genuinely a non-blocking placeholder.
+    if cfg.interludes_enabled:
+        if verbose: print("[3a] interludes (placeholders for empty days)")
+        _tick("interludes", 0, 1, "starting")
+        from claudejournal import interludes as interludemod
+        stats["interludes"] = interludemod.run(
+            cfg, all_=True, force=force, verbose=verbose,
+            progress=lambda d, t, l="": _tick("interludes", d, t, l),
+        )
+
     if not skip_narration:
-        if verbose: print("[3/5] narrate")
+        if verbose: print("[3b] narrate")
         _tick("narrate", 0, 1, "starting")
         stats["narrate"] = narratemod.run(
             cfg, narrator=narrator, all_=True, force=force, verbose=verbose,
@@ -121,15 +138,6 @@ def run_all(cfg: Config, *,
         )
     else:
         stats["narrate"] = {"skipped": True}
-
-    if cfg.interludes_enabled:
-        if verbose: print("[3b] interludes")
-        _tick("interludes", 0, 1, "starting")
-        from claudejournal import interludes as interludemod
-        stats["interludes"] = interludemod.run(
-            cfg, all_=True, force=force, verbose=verbose,
-            progress=lambda d, t, l="": _tick("interludes", d, t, l),
-        )
 
     if not skip_narration:
         if verbose: print("[3c] weekly rollups")

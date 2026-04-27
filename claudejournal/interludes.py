@@ -205,13 +205,20 @@ def _call_claude(system: str, user: str, model: str = "haiku",
 
 
 def empty_narration_dates(conn: sqlite3.Connection) -> list[str]:
-    """Days that have activity but no daily narration at all."""
+    """Days that have activity but no daily narration at all.
+
+    Returned newest-first so today's placeholder is generated before older
+    backlog. Narrate runs oldest-first, so by the time the interlude loop
+    reaches older dates, narrate has typically already filled them in —
+    minimizing the collision window where both produce content for the
+    same day.
+    """
     return [r["date"] for r in conn.execute(
         """SELECT DISTINCT e.date FROM events e
            LEFT JOIN narrations n
              ON n.scope='daily' AND n.date = e.date
            WHERE e.date != '' AND n.prose IS NULL
-           ORDER BY e.date"""
+           ORDER BY e.date DESC"""
     ).fetchall()]
 
 

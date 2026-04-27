@@ -29,6 +29,7 @@ from claudejournal.templates import (
     render_document_page,
     render_feed,
     render_month_break,
+    render_site_header,
     render_topic_page,
     render_week_break,
 )
@@ -504,10 +505,11 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
                                  tags_by_date=tags_by_date,
                                  known_topics=known_topics_all)
-    body = render_feed(
-        entries,
-        site_title="ClaudeJournal",
-        subtitle="a diary of what you built and what you learned",
+    # Shared filter-data bundle — the main feed AND every standalone
+    # deep-link page (weekly/monthly/topic/arc/doc) uses the same chip
+    # bar, so they all pass the same filter data into render_site_header.
+    # Each call just swaps the site_title/subtitle to contextualize.
+    filter_data = dict(
         projects=project_names,
         weeks=week_opts,
         months=month_opts,
@@ -518,6 +520,12 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         topic_pages=topic_pages_list,
         topic_pages_map=topic_pages_map,
         arc_pages=arc_pages_list,
+    )
+    body = render_feed(
+        entries,
+        site_title="ClaudeJournal",
+        subtitle="a diary of what you built and what you learned",
+        **filter_data,
     )
     (out_dir / "index.html").write_text(layout("Home", body, anchor_base="./"), encoding="utf-8")
     stats["index"] = 1
@@ -586,11 +594,12 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                 topic_slugs=_slug_map_global,
                 generated_at=arc_row["generated_at"] or "",
             )
-            body = (
-                f'<header class="site-head">'
-                f'  <div class="crumb"><a href="../../index.html">← back to journal</a></div>'
-                f'</header>{page_html}<footer>claudejournal</footer>'
+            header = render_site_header(
+                site_title="ClaudeJournal",
+                subtitle=f"Project · {pname}",
+                **filter_data,
             )
+            body = header + page_html + "<footer>claudejournal</footer>"
             (pdir / "index.html").write_text(
                 layout(pname, body, anchor_base="../../"), encoding="utf-8"
             )
@@ -616,13 +625,13 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         body_html = render_week_break(iso_week, prose, anchor_base="../",
                                       known_docs=known_docs_all,
                                       known_topics=known_topics_all)
-        body = (
-            f'<header class="site-head">'
-            f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
-            f'  <h1>Week {esc(iso_week)}</h1>'
-            f'  <div class="sub">starts {esc(start)}</div>'
-            f'</header>{body_html}<footer>claudejournal</footer>'
+        # Full site header — chip bar is the navigation, no back-crumb.
+        header = render_site_header(
+            site_title="ClaudeJournal",
+            subtitle=f"Week {iso_week} · starts {start}",
+            **filter_data,
         )
+        body = header + body_html + "<footer>claudejournal</footer>"
         (out_dir / "weekly" / f"{iso_week}.html").write_text(
             layout(f"Week {iso_week}", body, anchor_base="../"), encoding="utf-8"
         )
@@ -641,13 +650,12 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         body_html = render_month_break(ym, prose, anchor_base="../",
                                        known_docs=known_docs_all,
                                        known_topics=known_topics_all)
-        body = (
-            f'<header class="site-head">'
-            f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
-            f'  <h1>{esc(pretty)}</h1>'
-            f'  <div class="sub">starts {esc(start)}</div>'
-            f'</header>{body_html}<footer>claudejournal</footer>'
+        header = render_site_header(
+            site_title="ClaudeJournal",
+            subtitle=f"{pretty} · starts {start}",
+            **filter_data,
         )
+        body = header + body_html + "<footer>claudejournal</footer>"
         (out_dir / "monthly" / f"{ym}.html").write_text(
             layout(pretty, body, anchor_base="../"), encoding="utf-8"
         )
@@ -699,13 +707,12 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         }
         pretty_title = doc["title"] or doc["original_filename"] or doc["id"]
         body_html = render_document_page(doc, summary, anchor_base="../")
-        # Standalone page: just a back crumb + the doc article. The
-        # article carries its own title, so no redundant <h1>.
-        body = (
-            f'<header class="site-head">'
-            f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
-            f'</header>{body_html}<footer>claudejournal</footer>'
+        header = render_site_header(
+            site_title="ClaudeJournal",
+            subtitle=f"Document · {pretty_title}",
+            **filter_data,
         )
+        body = header + body_html + "<footer>claudejournal</footer>"
         (out_dir / "docs" / f"{dr['id']}.html").write_text(
             layout(pretty_title, body, anchor_base="../"), encoding="utf-8"
         )
@@ -754,13 +761,15 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             slug=slug,
             generated_at=gen_at,
         )
-        body = (
-            f'<header class="site-head">'
-            f'  <div class="crumb"><a href="../index.html">← back to journal</a></div>'
-            f'</header>{page_html}<footer>claudejournal</footer>'
+        pretty_tag = tag.replace("-", " ").title()
+        header = render_site_header(
+            site_title="ClaudeJournal",
+            subtitle=f"Topic · {pretty_tag}",
+            **filter_data,
         )
+        body = header + page_html + "<footer>claudejournal</footer>"
         (out_dir / "topics" / f"{slug}.html").write_text(
-            layout(tag.replace("-", " ").title(), body, anchor_base="../"),
+            layout(pretty_tag, body, anchor_base="../"),
             encoding="utf-8",
         )
         stats["topics"] += 1
