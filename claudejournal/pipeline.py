@@ -112,6 +112,19 @@ def run_all(cfg: Config, *,
     stats["topic_summary"] = topic_stats
     _tick("topic_summary", 1, 1, "done")
 
+    # [2e] Entity extraction — incremental; processes only briefs whose
+    # brief_json hash has not yet been indexed.  On first run this triggers
+    # a one-shot backfill of all historical briefs (haiku-model calls).
+    if verbose: print("[2e] entity-extraction")
+    _tick("entity_extract", 0, 1, "starting")
+    from claudejournal import entities as entitiesmod
+    entity_stats = entitiesmod.run(
+        cfg, force=force, verbose=verbose,
+        progress=lambda d, t, l="": _tick("entity_extract", d, t, l),
+    )
+    stats["entity_extract"] = entity_stats
+    _tick("entity_extract", 1, 1, "done")
+
     # Interludes run BEFORE narrate so today's quiet-day placeholder lands
     # immediately on the first pipeline pass — even if narrate is still
     # working through older backlog. The interlude loop processes

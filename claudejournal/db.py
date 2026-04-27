@@ -143,6 +143,28 @@ CREATE TABLE IF NOT EXISTS links (
 );
 CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_scope, target_key);
 CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_scope, source_key);
+
+-- Named-entity extraction results.  Populated by the [2e] entity extraction
+-- pipeline stage (entities.py).  Rebuilt incrementally -- briefs whose
+-- brief_json hash is already in brief_entities are skipped.
+-- entity types: 'person', 'library', 'ai_model', 'service'
+CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,           -- canonical_name (lowercased)
+    name TEXT NOT NULL,            -- display name (first seen form)
+    type TEXT NOT NULL,            -- 'person' | 'library' | 'ai_model' | 'service'
+    canonical_name TEXT NOT NULL,  -- lowercase normalized form
+    first_seen TEXT                -- ISO date YYYY-MM-DD
+);
+
+CREATE TABLE IF NOT EXISTS brief_entities (
+    session_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    entity_id TEXT NOT NULL REFERENCES entities(id),
+    brief_hash TEXT,               -- hash of the brief_json used for this extraction
+    PRIMARY KEY (session_id, date, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_brief_entities_date ON brief_entities(date);
+CREATE INDEX IF NOT EXISTS idx_brief_entities_entity ON brief_entities(entity_id);
 """
 
 

@@ -1032,6 +1032,33 @@ footer {
   margin: 0; padding-left: 18px;
 }
 .day-learned-callout li { margin: 3px 0; }
+
+/* Entity chips in the inspect panel */
+.entity-group { margin: 6px 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.entity-group-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+  min-width: 70px;
+}
+.entity-group-items { display: flex; flex-wrap: wrap; gap: 4px; }
+.entity-chip {
+  display: inline-block;
+  font-size: 0.72rem;
+  padding: 1px 7px;
+  border-radius: 10px;
+  text-decoration: none;
+  border: 1px solid currentColor;
+  transition: opacity 0.15s;
+}
+.entity-chip:hover { opacity: 0.75; }
+.entity-person    { color: var(--accent); }
+.entity-ai_model  { color: var(--ok, #4caf77); }
+.entity-library   { color: var(--warn, #d4a017); }
+.entity-service   { color: var(--muted); }
 """
 
 
@@ -1126,10 +1153,10 @@ INSPECT_WIDGET = """
 FILTER_WIDGET = """
 <script>
 (function() {
-  const data = window.__FILTERS__ || {projects: [], weeks: [], months: [], moods: [], learnings: [], years: [], tags: [], topic_pages: [], arc_pages: []};
+  const data = window.__FILTERS__ || {projects: [], weeks: [], months: [], moods: [], learnings: [], years: [], tags: [], topic_pages: [], arc_pages: [], entities: []};
   if (!data.projects.length && !data.weeks.length && !data.months.length
       && !data.moods.length && !data.learnings.length && !data.years.length
-      && !(data.tags || []).length) return;
+      && !(data.tags || []).length && !(data.entities || []).length) return;
   // `axis` + `value` drive the per-facet filter row (Project, Topic, …, Find).
   // `views` is a Set of entry types currently shown. Row 0 chips toggle
   // membership — multi-select, not mutually exclusive. Default is
@@ -1172,18 +1199,19 @@ FILTER_WIDGET = """
     a.addEventListener('click', e => { e.preventDefault(); onClick(); });
     return a;
   }
-  const AXIS_LABELS = {project: 'Project', topic: 'Topic', year: 'Year', month: 'Month', week: 'Week', mood: 'Mood', learning: 'Aha moment', search: 'Find'};
+  const AXIS_LABELS = {project: 'Project', topic: 'Topic', year: 'Year', month: 'Month', week: 'Week', mood: 'Mood', learning: 'Aha moment', entity: 'Entity', search: 'Find'};
   // Entry-type filter. 'all' shows everything; the others hide the two
   // element kinds that don't match (dailies are <article.entry>, weeklies
   // live in .week-rollup-wrap, monthlies in .month-rollup-wrap).
   const VIEW_KEYS = ['daily', 'weekly', 'monthly', 'library'];
   const VIEW_LABELS = {daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly', library: 'Library'};
-  const AXIS_KEYS = ['project', 'topic', 'year', 'month', 'week', 'mood', 'learning'];
+  const AXIS_KEYS = ['project', 'topic', 'year', 'month', 'week', 'mood', 'learning', 'entity'];
 
   const poolFor = (axis) => {
     if (axis === 'project') return data.projects;
     if (axis === 'topic') return data.tags || [];
     if (axis === 'learning') return data.learnings || [];
+    if (axis === 'entity') return data.entities || [];
     if (axis === 'search') return ['__search__'];  // pseudo — chip appears
     return data[axis + 's'] || [];
   };
@@ -1313,7 +1341,7 @@ FILTER_WIDGET = """
     if (state.value) {
       // Show the selected value as a single active sub-chip (click to clear).
       let label = state.value;
-      const lookup = {week: data.weeks, month: data.months, mood: data.moods, learning: data.learnings, year: data.years, topic: data.tags};
+      const lookup = {week: data.weeks, month: data.months, mood: data.moods, learning: data.learnings, year: data.years, topic: data.tags, entity: data.entities};
       const pool = lookup[state.axis];
       if (pool) {
         const hit = pool.find(x => x.key === state.value);
@@ -1488,6 +1516,9 @@ FILTER_WIDGET = """
         else if (state.axis === 'topic') {
           const tags = (el.dataset.tags || '').split(',').filter(Boolean);
           axisShow = tags.includes(state.value);
+        } else if (state.axis === 'entity') {
+          const ents = (el.dataset.entities || '').split(',').filter(Boolean);
+          axisShow = ents.includes(state.value);
         }
       }
       el.classList.toggle('filter-hidden', !axisShow);
@@ -1600,7 +1631,7 @@ FILTER_WIDGET = """
       return [k, v ? decodeURIComponent(v) : ''];
     }));
     // Only adopt filter-related hashes; date anchors like #2026-04-12 are ignored here.
-    if (['project','week','month','mood','learning','search','year','topic'].includes(params.axis)) {
+    if (['project','week','month','mood','learning','search','year','topic','entity'].includes(params.axis)) {
       state.axis = params.axis;
       if (params.mode && ['overview','timeline'].includes(params.mode)) state.mode = params.mode;
       if (params.value) state.value = params.value;
@@ -2643,13 +2674,18 @@ def _count_meta(row: dict, mood: str = "") -> str:
 def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[dict],
                                  files: list[dict], briefs: list[dict] | None,
                                  entry_id: str,
-                                 narration_generated_at: str = "") -> str:
+                                 narration_generated_at: str = "",
+                                 entities: list[dict] | None = None,
+                                 anchor_base: str = "./") -> str:
     """Per-category inspect chips. Each chip toggles its own panel. Multiple
-    can be open at once. Order: learned callout → briefs → learned → prompts → moments → files → updated.
+    can be open at once. Order: learned callout → briefs → learned → prompts → moments → files → entities → updated.
 
     A standalone "Learned" chip lists all learning items across a day's briefs.
     The most notable learning (longest item) is promoted to a visible callout
     above the inspect-row chips so it's readable without expanding anything.
+
+    entities: [{key, label, type}] list built from brief_entities for this date.
+      Each entity name is rendered as a chip linking to the entity-filtered feed.
     """
     n_files = len(files); n_prompts = len(prompts); n_snips = len(snippets)
     n_briefs = len(briefs) if briefs else 0
@@ -2762,6 +2798,36 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
         )
         _add("files", f"{n_files} files", f"<ul class='files'>{items}</ul>",
              searchable=True, search_placeholder="filter files...")
+
+    # --- entities (named-entity chip: people, libraries, AI models, services) ---
+    # Links each entity name to the entity-filtered feed view so clicking
+    # "React" jumps straight to all days that mention React.
+    if entities:
+        type_order = {"person": 0, "ai_model": 1, "library": 2, "service": 3}
+        type_labels = {"person": "People", "ai_model": "AI Models",
+                       "library": "Libraries", "service": "Services"}
+        grouped: dict[str, list[dict]] = {}
+        for ent in sorted(entities, key=lambda e: (type_order.get(e["type"], 9), e["label"].lower())):
+            grouped.setdefault(ent["type"], []).append(ent)
+        parts = []
+        for etype in ("person", "ai_model", "library", "service"):
+            if etype not in grouped:
+                continue
+            items_html = "".join(
+                f'<a href="{esc(anchor_base)}index.html#axis=entity&value={esc(ent["key"])}" '
+                f'class="entity-chip entity-{esc(etype)}">'
+                f'{esc(ent["label"])}</a>'
+                for ent in grouped[etype]
+            )
+            parts.append(
+                f'<div class="entity-group">'
+                f'<span class="entity-group-label">{esc(type_labels[etype])}</span>'
+                f'<span class="entity-group-items">{items_html}</span>'
+                f'</div>'
+            )
+        n_ents = len(entities)
+        _add("entities", f"{n_ents} entit{'y' if n_ents == 1 else 'ies'}",
+             "".join(parts))
 
     # --- updated (narration + brief generation timestamps) ---
     # One chip showing when this entry was last written. The panel lists the
@@ -2985,7 +3051,8 @@ def render_day_entry(date: str, narration: str, mood: str,
                      docs_added: list[dict] | None = None,
                      known_docs: list[tuple[str, str]] | None = None,
                      known_topics: list[tuple[str, str]] | None = None,
-                     open_loops_count: int = 0) -> str:
+                     open_loops_count: int = 0,
+                     entities: list[dict] | None = None) -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed.
 
     open_loops_count: number of open friction loops older than 7 days that
@@ -3014,7 +3081,9 @@ def render_day_entry(date: str, narration: str, mood: str,
 
     activity = _render_activity_disclosure(counts_row, prompts, snippets, files, briefs,
                                            entry_id=date,
-                                           narration_generated_at=narration_generated_at)
+                                           narration_generated_at=narration_generated_at,
+                                           entities=entities,
+                                           anchor_base=anchor_base)
 
     # Open loops banner — only shown when there are stale unresolved items
     loops_html = ""
@@ -3030,13 +3099,15 @@ def render_day_entry(date: str, narration: str, mood: str,
     week_attr = _iso_week_of(date)
     year = _pretty_date_year(date)
     year_html = f'<span class="year">{esc(year)}</span>' if year else ""
+    entities_attr = ",".join(e["key"] for e in (entities or []))
     return (
         f'<article class="entry" id="{esc(date)}" '
         f'data-projects="{esc(projects_attr)}" data-week="{esc(week_attr)}" '
         f'data-month="{esc(month)}" data-year="{esc(year)}" '
         f'data-mood="{esc(mood_label)}" '
         f'data-learning="{"yes" if has_learning else "no"}" '
-        f'data-tags="{esc(",".join(tags or []))}">'
+        f'data-tags="{esc(",".join(tags or []))}" '
+        f'data-entities="{esc(entities_attr)}">'
         f'  <header class="entry-head">'
         f'    <h2><a href="#{esc(date)}" style="color:inherit;text-decoration:none;">{esc(pretty)} {year_html}</a></h2>'
         f'    <span class="meta">{meta}{loops_html}</span>'
@@ -3111,7 +3182,8 @@ def render_site_header(*, site_title: str, subtitle: str,
                        tags: list[dict] | None = None,
                        topic_pages: list[str] | None = None,
                        topic_pages_map: dict[str, str] | None = None,
-                       arc_pages: list[str] | None = None) -> str:
+                       arc_pages: list[str] | None = None,
+                       entities: list[dict] | None = None) -> str:
     """The full site header — site title, subtitle, and filter bar — plus
     the window.__FILTERS__ data script. Used by the main feed page AND by
     every standalone deep-link page (weekly / monthly / topic / arc / doc)
@@ -3119,11 +3191,16 @@ def render_site_header(*, site_title: str, subtitle: str,
     users return to any filtered view by clicking chips rather than
     following a back-arrow breadcrumb.
 
+    entities: [{key, label, type}] for the entity filter axis, sorted by
+      day-count descending. Each entity's `key` is the canonical_name (used
+      as the data-entities attribute value on entries).
+
     Returns the data_script + header HTML as one string ready to prepend
     to the page body.
     """
     import json as _json
-    has_any = bool(projects or weeks or months or moods or learnings or years or tags)
+    has_any = bool(projects or weeks or months or moods or learnings or years or tags
+                   or entities)
     filter_bar = ""
     if has_any:
         filter_bar = (
@@ -3135,7 +3212,7 @@ def render_site_header(*, site_title: str, subtitle: str,
         )
     data_script = (
         f'<script>\n'
-        f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or [], "topic_pages": topic_pages or [], "topic_pages_map": topic_pages_map or {}, "arc_pages": arc_pages or []})};\n'
+        f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or [], "topic_pages": topic_pages or [], "topic_pages_map": topic_pages_map or {}, "arc_pages": arc_pages or [], "entities": entities or []})};\n'
         f'</script>'
     )
     head = (
@@ -3159,6 +3236,7 @@ def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
                 topic_pages: list[str] | None = None,
                 topic_pages_map: dict[str, str] | None = None,
                 arc_pages: list[str] | None = None,
+                entities: list[dict] | None = None,
                 crumb_html: str = "") -> str:
     """Compose the feed page. Filtering is client-side via a breadcrumb
     chip bar — see FILTER_WIDGET for the runtime behavior.
@@ -3166,13 +3244,14 @@ def render_feed(entries_html: list[str], *, site_title: str, subtitle: str,
     topic_pages: list of tag strings that have generated topic pages.
     topic_pages_map: {tag: slug} map so the JS can build correct hrefs.
     arc_pages: list of project names that have arc pages.
+    entities: [{key, label, type}] for the entity filter axis.
     """
     header = render_site_header(
         site_title=site_title, subtitle=subtitle,
         projects=projects, weeks=weeks, months=months, moods=moods,
         learnings=learnings, years=years, tags=tags,
         topic_pages=topic_pages, topic_pages_map=topic_pages_map,
-        arc_pages=arc_pages,
+        arc_pages=arc_pages, entities=entities,
     )
     # Project-page crumb (optional) goes between the site header and the
     # feed. Crumbs on deep-link pages (weekly / monthly / topic / arc /

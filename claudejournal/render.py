@@ -332,12 +332,16 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
                        pid: str | None = None,
                        tags_by_date: dict[str, list[str]] | None = None,
                        known_topics: list[tuple[str, str]] | None = None,
-                       open_loops_by_project: dict[str, int] | None = None) -> list[str]:
+                       open_loops_by_project: dict[str, int] | None = None,
+                       entities_by_date: dict[str, list[str]] | None = None) -> list[str]:
     """Produce the feed entries + week/month breaks interleaved, newest first.
 
     open_loops_by_project: {project_id: count_of_open_loops_older_than_7d}
       Pre-computed in render_site() from compute_open_loops(). Used to render
       the open-loops banner on daily entries.
+    entities_by_date: {date: [canonical_name, ...]} pre-built in render_site()
+      from brief_entities. Each canonical_name becomes a token in the entry's
+      data-entities attribute so the JS entity filter axis can match it.
     """
     weekly = _weekly_rollups(conn)
     monthly = _monthly_rollups(conn)
@@ -352,6 +356,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     known_topics = known_topics or []
     tags_by_date = tags_by_date or {}
     open_loops_by_project = open_loops_by_project or {}
+    entities_by_date = entities_by_date or {}
 
     # Build a map of date -> project_ids active that day for banner lookup.
     # We use the events table since that's already available without extra queries.
@@ -411,6 +416,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             known_docs=known_docs,
             known_topics=known_topics,
             open_loops_count=day_open_loops,
+            entities=entities_by_date.get(date, []),
         ))
         # Doc entries for this date — emitted right after the day so they
         # cluster chronologically. The Library view chip keeps them visible
@@ -663,6 +669,36 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     tags_by_date, tag_counts = _tags_index(conn)
     tag_opts = [{"key": k, "label": k, "count": c} for k, c in tag_counts.most_common()]
 
+    # Entities: pulled from brief_entities/entities tables, sorted by day-count
+    # descending.  entity_opts is the flat JS filter pool; entities_by_date
+    # maps each date to a list of entity dicts {key, label, type} for both
+    # the data-entities attr (uses 'key' = canonical_name) and the inspect chip.
+    from claudejournal.entities import get_all_entities_with_counts as _get_entity_counts
+    _raw_entity_list = _get_entity_counts(conn)
+    entity_opts = [
+        {"key": e["canonical_name"], "label": e["name"], "type": e["type"]}
+        for e in _raw_entity_list
+    ]
+    # Build {date: [{key, label, type}, ...]} for entry annotation and inspect chip.
+    # One query fetches all (date, entity) pairs; we fan out to dicts using the
+    # entity_opts lookup map (keyed by canonical_name).
+    entities_by_date: dict[str, list[dict]] = {}
+    if entity_opts:
+        _ent_opt_map = {e["key"]: e for e in entity_opts}
+        _entity_date_rows = conn.execute(
+            """SELECT DISTINCT be.date, e.canonical_name, e.name, e.type
+               FROM brief_entities be
+               JOIN entities e ON e.id = be.entity_id
+               WHERE be.date != ''
+               ORDER BY be.date, e.type, e.name"""
+        ).fetchall()
+        for _r in _entity_date_rows:
+            entities_by_date.setdefault(_r["date"], []).append({
+                "key": _r["canonical_name"],
+                "label": _r["name"],
+                "type": _r["type"],
+            })
+
     # Topic pages data for Overview mode.  Build slug map now so the JS gets
     # the correct hrefs. Only tags with a generated prose page are included.
     from claudejournal.topics import build_slug_map, tags_with_enough_coverage
@@ -717,7 +753,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
                                  tags_by_date=tags_by_date,
                                  known_topics=known_topics_all,
-                                 open_loops_by_project=_open_loops_by_project)
+                                 open_loops_by_project=_open_loops_by_project,
+                                 entities_by_date=entities_by_date)
     # Shared filter-data bundle — the main feed AND every standalone
     # deep-link page (weekly/monthly/topic/arc/doc) uses the same chip
     # bar, so they all pass the same filter data into render_site_header.
@@ -733,6 +770,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         topic_pages=topic_pages_list,
         topic_pages_map=topic_pages_map,
         arc_pages=arc_pages_list,
+        entities=entity_opts,
     )
     body = render_feed(
         entries,
