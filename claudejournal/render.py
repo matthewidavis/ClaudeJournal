@@ -9,6 +9,8 @@ Layout:
   out/docs/<id>.html                          — curated document summary + excerpt
   out/chat.html                               — chat deep-link (floating bubble is primary)
   out/daily/<YYYY-MM-DD>.html                 — compat redirect to index.html#date
+  out/loops.html                              — open loops standing page (Phase B)
+  out/learnings.html                          — learnings aggregation standing page (Phase B)
 """
 from __future__ import annotations
 
@@ -35,6 +37,8 @@ from claudejournal.templates import (
     render_document_page,
     render_feed,
     render_graph_page,
+    render_learnings_page,
+    render_loops_page,
     render_month_break,
     render_site_header,
     render_topic_page,
@@ -327,8 +331,14 @@ def _docs_by_date(conn: sqlite3.Connection,
 def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: str,
                        pid: str | None = None,
                        tags_by_date: dict[str, list[str]] | None = None,
-                       known_topics: list[tuple[str, str]] | None = None) -> list[str]:
-    """Produce the feed entries + week/month breaks interleaved, newest first."""
+                       known_topics: list[tuple[str, str]] | None = None,
+                       open_loops_by_project: dict[str, int] | None = None) -> list[str]:
+    """Produce the feed entries + week/month breaks interleaved, newest first.
+
+    open_loops_by_project: {project_id: count_of_open_loops_older_than_7d}
+      Pre-computed in render_site() from compute_open_loops(). Used to render
+      the open-loops banner on daily entries.
+    """
     weekly = _weekly_rollups(conn)
     monthly = _monthly_rollups(conn)
     docs_by_date = _docs_by_date(conn, pid=pid)
@@ -341,6 +351,18 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     ]
     known_topics = known_topics or []
     tags_by_date = tags_by_date or {}
+    open_loops_by_project = open_loops_by_project or {}
+
+    # Build a map of date -> project_ids active that day for banner lookup.
+    # We use the events table since that's already available without extra queries.
+    date_project_ids: dict[str, list[str]] = {}
+    if open_loops_by_project:
+        rows = conn.execute(
+            "SELECT DISTINCT date, project_id FROM events WHERE date != '' ORDER BY date"
+        ).fetchall()
+        for r in rows:
+            date_project_ids.setdefault(r["date"], []).append(r["project_id"])
+
     out: list[str] = []
     last_week: str | None = None
     last_month: str | None = None
@@ -366,6 +388,14 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
         interlude = interludemod.get_for_date(conn, date) if not bundle["narration"] else None
         day_mood = _day_mood_label(conn, date)
         has_learn = _day_has_learning(conn, date)
+
+        # Open loops banner: sum loops from all projects active this day
+        # (only show when at least one loop is > 7 days old — the threshold
+        # is already baked into open_loops_by_project which was built from
+        # loops with age_days >= 7).
+        day_pids = date_project_ids.get(date, [])
+        day_open_loops = sum(open_loops_by_project.get(p, 0) for p in day_pids)
+
         out.append(render_day_entry(
             date, bundle["narration"], bundle["mood"],
             bundle["counts"], bundle["prompts"], bundle["snippets"],
@@ -380,6 +410,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             docs_added=docs_by_date.get(date, []),
             known_docs=known_docs,
             known_topics=known_topics,
+            open_loops_count=day_open_loops,
         ))
         # Doc entries for this date — emitted right after the day so they
         # cluster chronologically. The Library view chip keeps them visible
@@ -671,9 +702,22 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     link_count = _rebuild_links(conn, known_docs_all, known_topics_all)
     stats["links"] = link_count
 
+    # ---------- Pre-compute open loops for feed banners ----------
+    # Build {project_id: count} for loops older than 7 days.  This is cheap
+    # (pure text ops) and is used by every day entry in _render_feed_pages.
+    from claudejournal.openloops import compute_open_loops as _compute_open_loops
+    _all_open_loops = _compute_open_loops(conn)
+    _open_loops_by_project: dict[str, int] = {}
+    for _loop in _all_open_loops:
+        if _loop["age_days"] >= 7:
+            _open_loops_by_project[_loop["project_id"]] = (
+                _open_loops_by_project.get(_loop["project_id"], 0) + 1
+            )
+
     entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
                                  tags_by_date=tags_by_date,
-                                 known_topics=known_topics_all)
+                                 known_topics=known_topics_all,
+                                 open_loops_by_project=_open_loops_by_project)
     # Shared filter-data bundle — the main feed AND every standalone
     # deep-link page (weekly/monthly/topic/arc/doc) uses the same chip
     # bar, so they all pass the same filter data into render_site_header.
@@ -986,6 +1030,39 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         encoding="utf-8",
     )
     stats["graph"] = 1
+
+    # ---------- Open loops standing page (out/loops.html) ----------
+    # Reuse the pre-computed list from the feed banners pass above.
+    open_loops = _all_open_loops
+    loops_body = render_loops_page(open_loops, anchor_base="./")
+    loops_header = render_site_header(
+        site_title="ClaudeJournal",
+        subtitle=f"Open Loops · {len(open_loops)} unresolved",
+        **filter_data,
+    )
+    (out_dir / "loops.html").write_text(
+        layout("Open Loops", loops_header + loops_body + "<footer>claudejournal</footer>",
+               anchor_base="./"),
+        encoding="utf-8",
+    )
+    stats["loops"] = len(open_loops)
+
+    # ---------- Learnings standing page (out/learnings.html) ----------
+    from claudejournal.learnings import aggregate_learnings
+    learnings_list = aggregate_learnings(conn)
+    learnings_body = render_learnings_page(learnings_list, anchor_base="./",
+                                           known_topics=known_topics_all)
+    learnings_header = render_site_header(
+        site_title="ClaudeJournal",
+        subtitle=f"Learnings · {len(learnings_list)} insights",
+        **filter_data,
+    )
+    (out_dir / "learnings.html").write_text(
+        layout("Learnings", learnings_header + learnings_body + "<footer>claudejournal</footer>",
+               anchor_base="./"),
+        encoding="utf-8",
+    )
+    stats["learnings"] = len(learnings_list)
 
     conn.close()
     return stats

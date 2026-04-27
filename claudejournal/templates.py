@@ -930,6 +930,108 @@ footer {
   padding-top: 12px; border-top: 1px solid var(--rule); text-align: center;
   font-family: ui-monospace, Consolas, monospace;
 }
+
+/* ── Open loops standalone page (out/loops.html) ───────────────────── */
+.loops-page {
+  max-width: 720px; margin: 20px auto; padding: 0 0 40px;
+}
+.loops-page h2 { margin: 0 0 6px; font-size: 22px; font-weight: 500; }
+.loops-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 24px;
+}
+.loops-project-group { margin-bottom: 32px; }
+.loops-project-heading {
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  margin: 0 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.loop-item {
+  margin: 0 0 14px; padding: 10px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--warn);
+  border-radius: 4px; background: var(--paper); font-size: 14px;
+  line-height: 1.55;
+}
+.loop-text { margin: 0 0 6px; color: var(--fg); }
+.loop-footer {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
+}
+.loop-age { color: var(--warn); font-weight: 500; }
+.loop-tags code {
+  background: var(--chip); padding: 1px 6px; border-radius: 9px;
+  font-size: 10px; margin-right: 2px;
+}
+.loops-empty {
+  color: var(--muted); font-style: italic; text-align: center;
+  padding: 40px 0; font-size: 15px;
+}
+/* Open loops banner on daily entries */
+.open-loops-banner {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--warn);
+  font-family: ui-monospace, Consolas, monospace;
+  margin-left: 10px; opacity: 0.85;
+}
+.open-loops-banner a {
+  color: var(--warn); text-decoration: none;
+  border-bottom: 1px dotted var(--warn);
+}
+.open-loops-banner a:hover { border-bottom-style: solid; }
+
+/* ── Learnings standalone page (out/learnings.html) ─────────────────── */
+.learnings-page {
+  max-width: 720px; margin: 20px auto; padding: 0 0 40px;
+}
+.learnings-page h2 { margin: 0 0 6px; font-size: 22px; font-weight: 500; }
+.learnings-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 24px;
+}
+.learnings-tag-group { margin-bottom: 32px; }
+.learnings-tag-heading {
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  margin: 0 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.learning-item {
+  margin: 0 0 12px; padding: 10px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--ok);
+  border-radius: 4px; background: var(--paper); font-size: 14px;
+  line-height: 1.55;
+}
+.learning-text { margin: 0 0 6px; color: var(--fg); }
+.learning-footer {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: center;
+}
+.learning-count { color: var(--ok); font-weight: 500; }
+.learnings-empty {
+  color: var(--muted); font-style: italic; text-align: center;
+  padding: 40px 0; font-size: 15px;
+}
+/* Learnings callout chip inline on daily entries */
+.day-learned-callout {
+  margin-top: 10px; padding: 8px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--ok);
+  border-radius: 4px; background: var(--paper);
+  font-size: 13px; line-height: 1.5;
+}
+.day-learned-callout-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ok); font-family: ui-monospace, Consolas, monospace;
+  font-weight: 600; margin-bottom: 4px;
+}
+.day-learned-callout ul {
+  margin: 0; padding-left: 18px;
+}
+.day-learned-callout li { margin: 3px 0; }
 """
 
 
@@ -1139,6 +1241,14 @@ FILTER_WIDGET = """
       // Graph chip — navigates to the static force-directed link graph page.
       modesRow.appendChild(makeChip('Graph', 'mode mode-graph', () => {
         window.location.href = anchorBase + 'graph.html';
+      }));
+      // Loops chip — navigates to the open loops standing page.
+      modesRow.appendChild(makeChip('Loops', 'mode mode-loops', () => {
+        window.location.href = anchorBase + 'loops.html';
+      }));
+      // Learnings chip — navigates to the learnings standing page.
+      modesRow.appendChild(makeChip('Learnings', 'mode mode-learnings', () => {
+        window.location.href = anchorBase + 'learnings.html';
       }));
     }
 
@@ -2535,12 +2645,40 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                                  entry_id: str,
                                  narration_generated_at: str = "") -> str:
     """Per-category inspect chips. Each chip toggles its own panel. Multiple
-    can be open at once. Order: briefs → prompts → moments → files → updated."""
+    can be open at once. Order: learned callout → briefs → learned → prompts → moments → files → updated.
+
+    A standalone "Learned" chip lists all learning items across a day's briefs.
+    The most notable learning (longest item) is promoted to a visible callout
+    above the inspect-row chips so it's readable without expanding anything.
+    """
     n_files = len(files); n_prompts = len(prompts); n_snips = len(snippets)
     n_briefs = len(briefs) if briefs else 0
     # Show "Updated" chip whenever the day has *any* content to timestamp.
     if not (n_files or n_prompts or n_snips or n_briefs or narration_generated_at):
         return ""
+
+    # Collect all learnings from this day's briefs for the dedicated chip + callout.
+    all_learned: list[str] = []
+    if briefs:
+        for b in briefs:
+            for item in (b.get("learned") or []):
+                if isinstance(item, str) and item.strip():
+                    all_learned.append(item.strip())
+
+    # Build the learning callout (most notable = longest item, shown without a chip)
+    learned_callout = ""
+    if all_learned:
+        most_notable = max(all_learned, key=len)
+        # Only surface if there's a meaningful insight (at least 40 chars)
+        if len(most_notable) >= 40:
+            learned_callout = (
+                f'<div class="day-learned-callout">'
+                f'  <div class="day-learned-callout-label">Learned</div>'
+                f'  <ul>'
+                + "".join(f"<li>{esc(item)}</li>" for item in all_learned[:3])
+                + f'  </ul>'
+                f'</div>'
+            )
 
     chips: list[str] = []
     panels: list[str] = []
@@ -2589,6 +2727,14 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
              f"{n_briefs} brief{'s' if n_briefs != 1 else ''}",
              "".join(body_parts),
              searchable=True, search_placeholder="filter briefs...")
+
+    # --- learned (dedicated chip: all learning items across the day's briefs) ---
+    if all_learned:
+        n_learned = len(all_learned)
+        learned_items_html = "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in all_learned) + "</ul>"
+        _add("learned",
+             f"{n_learned} learned",
+             learned_items_html)
 
     # --- prompts ---
     if prompts:
@@ -2645,6 +2791,7 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
         _add("updated", f"Updated {chip_label}", narration_line + brief_rows)
 
     return (
+        f'{learned_callout}'
         f'<div class="inspect-row">{"".join(chips)}</div>'
         f'{"".join(panels)}'
     )
@@ -2837,8 +2984,14 @@ def render_day_entry(date: str, narration: str, mood: str,
                      narration_generated_at: str = "",
                      docs_added: list[dict] | None = None,
                      known_docs: list[tuple[str, str]] | None = None,
-                     known_topics: list[tuple[str, str]] | None = None) -> str:
-    """Single day entry for the feed. Narration is hero; activity is disclosed."""
+                     known_topics: list[tuple[str, str]] | None = None,
+                     open_loops_count: int = 0) -> str:
+    """Single day entry for the feed. Narration is hero; activity is disclosed.
+
+    open_loops_count: number of open friction loops older than 7 days that
+      touch any project active on this day. When > 0, a subtle indicator is
+      shown in the entry header meta line linking to loops.html.
+    """
     pretty = _pretty_date_safe(date)
     known_docs = known_docs or []
     known_topics = known_topics or []
@@ -2863,6 +3016,16 @@ def render_day_entry(date: str, narration: str, mood: str,
                                            entry_id=date,
                                            narration_generated_at=narration_generated_at)
 
+    # Open loops banner — only shown when there are stale unresolved items
+    loops_html = ""
+    if open_loops_count > 0:
+        label = f"{open_loops_count} open loop{'s' if open_loops_count != 1 else ''}"
+        loops_html = (
+            f'<span class="open-loops-banner">'
+            f'<a href="{anchor_base}loops.html" title="View open loops">{esc(label)}</a>'
+            f'</span>'
+        )
+
     projects_attr = ",".join(projects_in_day or [])
     week_attr = _iso_week_of(date)
     year = _pretty_date_year(date)
@@ -2876,7 +3039,7 @@ def render_day_entry(date: str, narration: str, mood: str,
         f'data-tags="{esc(",".join(tags or []))}">'
         f'  <header class="entry-head">'
         f'    <h2><a href="#{esc(date)}" style="color:inherit;text-decoration:none;">{esc(pretty)} {year_html}</a></h2>'
-        f'    <span class="meta">{meta}</span>'
+        f'    <span class="meta">{meta}{loops_html}</span>'
         f'  </header>'
         f'  {body}'
         f'  {activity}'
@@ -3402,3 +3565,175 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
 .mode-graph {{ }}
 </style>
 """
+
+
+def render_loops_page(open_loops: list[dict], anchor_base: str = "./") -> str:
+    """Standalone open-loops page (out/loops.html).
+
+    open_loops: list of dicts as returned by openloops.compute_open_loops().
+    Groups by project, sorted oldest-first within each group.
+    Projects are sorted by the age of their oldest open loop (oldest first).
+    """
+    if not open_loops:
+        return (
+            '<div class="loops-page">'
+            '  <h2>Open Loops</h2>'
+            '  <div class="loops-meta">Unresolved friction items from session briefs.</div>'
+            '  <div class="loops-empty">No open loops found — you\'ve resolved everything!</div>'
+            '</div>'
+        )
+
+    # Group by project_id; sort projects by age of oldest loop desc
+    from collections import defaultdict
+    by_project: dict[str, list[dict]] = defaultdict(list)
+    for loop in open_loops:
+        by_project[loop["project_id"]].append(loop)
+
+    # Sort projects: most-aged first (oldest unresolved friction at top)
+    project_order = sorted(
+        by_project.keys(),
+        key=lambda pid: max(l["age_days"] for l in by_project[pid]),
+        reverse=True,
+    )
+
+    total = len(open_loops)
+    n_projects = len(by_project)
+    meta = (
+        f'{total} open loop{"s" if total != 1 else ""} '
+        f'across {n_projects} project{"s" if n_projects != 1 else ""}'
+    )
+
+    groups_html = []
+    for pid in project_order:
+        loops_in_group = sorted(by_project[pid], key=lambda l: l["date"])
+        proj_name = loops_in_group[0]["project_name"]
+
+        items_html = []
+        for loop in loops_in_group:
+            age = loop["age_days"]
+            age_str = f"{age}d open" if age < 60 else f"{age // 30}mo open"
+            date_str = loop["date"]
+            tags = loop.get("tags") or []
+            tag_html = ""
+            if tags:
+                tag_html = (
+                    '<span class="loop-tags">'
+                    + "".join(f"<code>{esc(t)}</code>" for t in tags[:5])
+                    + "</span>"
+                )
+            items_html.append(
+                f'<div class="loop-item">'
+                f'  <div class="loop-text">{esc(loop["friction"])}</div>'
+                f'  <div class="loop-footer">'
+                f'    <span class="loop-age">{esc(age_str)}</span>'
+                f'    <span class="loop-date">{esc(date_str)}</span>'
+                f'    {tag_html}'
+                f'  </div>'
+                f'</div>'
+            )
+
+        groups_html.append(
+            f'<div class="loops-project-group">'
+            f'  <div class="loops-project-heading">{esc(proj_name)}</div>'
+            f'  {"".join(items_html)}'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="loops-page">'
+        f'  <h2>Open Loops</h2>'
+        f'  <div class="loops-meta">{esc(meta)}</div>'
+        f'  {"".join(groups_html)}'
+        f'</div>'
+    )
+
+
+def render_learnings_page(learnings: list[dict], anchor_base: str = "./",
+                          known_topics: list[tuple[str, str]] | None = None) -> str:
+    """Standalone learnings page (out/learnings.html).
+
+    learnings: list of dicts as returned by learnings.aggregate_learnings().
+    Each dict: {text, dates, projects, tags, first_seen, times_seen}.
+    Groups by primary tag cluster, sorted by recency (most recent first).
+    The learning text passes through link_topic_titles so any topic mention
+    becomes a link.
+    """
+    known_topics = known_topics or []
+
+    if not learnings:
+        return (
+            '<div class="learnings-page">'
+            '  <h2>Learnings</h2>'
+            '  <div class="learnings-meta">Aggregated insights from session briefs.</div>'
+            '  <div class="learnings-empty">No learnings recorded yet.</div>'
+            '</div>'
+        )
+
+    from collections import defaultdict
+
+    # Group by primary tag (first tag, or "untagged")
+    by_tag: dict[str, list[dict]] = defaultdict(list)
+    for item in learnings:
+        tags = item.get("tags") or []
+        primary = tags[0] if tags else "untagged"
+        by_tag[primary].append(item)
+
+    # Sort tag groups by most-recent first_seen date
+    def _group_recency(tag: str) -> str:
+        return max((i["first_seen"] for i in by_tag[tag]), default="")
+
+    tag_order = sorted(by_tag.keys(), key=_group_recency, reverse=True)
+
+    total = len(learnings)
+    n_tags = len(by_tag)
+    meta = (
+        f'{total} learning{"s" if total != 1 else ""} '
+        f'across {n_tags} topic area{"s" if n_tags != 1 else ""}'
+    )
+
+    groups_html = []
+    for tag in tag_order:
+        items_in_group = sorted(by_tag[tag], key=lambda i: i["first_seen"], reverse=True)
+        tag_label = tag.replace("-", " ").title() if tag != "untagged" else "Untagged"
+
+        items_html = []
+        for item in items_in_group:
+            times = item.get("times_seen", 1)
+            first = item.get("first_seen", "")
+            projs = item.get("projects") or []
+            proj_str = ", ".join(projs[:3]) + ("…" if len(projs) > 3 else "")
+
+            # Apply topic linkification to the learning text
+            raw_text = item["text"]
+            try:
+                linked_text = link_topic_titles(esc(raw_text), known_topics,
+                                                base_path=anchor_base)
+            except Exception:
+                linked_text = esc(raw_text)
+
+            count_str = f"seen {times}×" if times > 1 else "seen once"
+            items_html.append(
+                f'<div class="learning-item">'
+                f'  <div class="learning-text">{linked_text}</div>'
+                f'  <div class="learning-footer">'
+                f'    <span class="learning-count">{esc(count_str)}</span>'
+                f'    <span class="learning-date">first: {esc(first[:10])}</span>'
+                f'    {("<span class=\"learning-proj\">" + esc(proj_str) + "</span>") if proj_str else ""}'
+                f'  </div>'
+                f'</div>'
+            )
+
+        groups_html.append(
+            f'<div class="learnings-tag-group">'
+            f'  <div class="learnings-tag-heading">{esc(tag_label)}</div>'
+            f'  {"".join(items_html)}'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="learnings-page">'
+        f'  <h2>Learnings</h2>'
+        f'  <div class="learnings-meta">{esc(meta)}</div>'
+        f'  {"".join(groups_html)}'
+        f'</div>'
+    )
