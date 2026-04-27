@@ -196,3 +196,58 @@ def detect_unanchored(prose: str) -> list[str]:
 
 def anchored_dates(prose: str) -> list[str]:
     return sorted(set(_ANCHOR_RX.findall(prose)))
+
+
+# ---------------------------------------------------------------------------
+# Link-pair extraction helpers — used by the render pipeline to populate the
+# materialized `links` table.  These run on the *raw prose* (before HTML
+# escaping) to extract the pairs; they are separate from the HTML-producing
+# functions above so we don't have to change any template call site.
+# ---------------------------------------------------------------------------
+
+def extract_anchor_pairs(prose: str) -> list[str]:
+    """Return sorted unique date strings referenced as [YYYY-MM-DD] in prose.
+
+    Each returned value is a target_key (a date string) with link_type
+    'date_anchor'.
+    """
+    return sorted(set(_ANCHOR_RX.findall(prose)))
+
+
+def extract_doc_link_pairs(prose: str, doc_titles: list[tuple[str, str]]) -> list[str]:
+    """Return sorted unique doc_ids whose titles appear in prose.
+
+    `doc_titles` is a list of (title, doc_id) pairs — same format as the
+    `link_doc_titles` call site.
+    """
+    if not doc_titles:
+        return []
+    # Work on unescaped prose so we don't have to deal with &amp; etc.
+    found: list[str] = []
+    sorted_titles = sorted(doc_titles, key=lambda t: len(t[0]), reverse=True)
+    for title, doc_id in sorted_titles:
+        if not title or not title.strip():
+            continue
+        pattern = r"(?<![\w-])" + re.escape(title) + r"(?![\w-])"
+        if re.search(pattern, prose, flags=re.IGNORECASE):
+            found.append(doc_id)
+    return sorted(set(found))
+
+
+def extract_topic_link_pairs(prose: str, topic_tags: list[tuple[str, str]]) -> list[str]:
+    """Return sorted unique slugs whose tag names appear in prose.
+
+    `topic_tags` is a list of (tag_name, slug) pairs — same format as the
+    `link_topic_titles` call site.
+    """
+    if not topic_tags:
+        return []
+    found: list[str] = []
+    sorted_tags = sorted(topic_tags, key=lambda t: len(t[0]), reverse=True)
+    for tag_name, slug in sorted_tags:
+        if not tag_name or not tag_name.strip():
+            continue
+        pattern = r"(?<![\w-])" + re.escape(tag_name) + r"(?![\w-])"
+        if re.search(pattern, prose, flags=re.IGNORECASE):
+            found.append(slug)
+    return sorted(set(found))

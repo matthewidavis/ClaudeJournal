@@ -504,6 +504,30 @@ a.topic-link:hover { border-bottom-style: solid; }
 }
 .topic-footer a:hover { border-bottom-style: solid; }
 
+/* ── Backlinks "Referenced from" section ───────────────────────────── */
+.backlinks-section {
+  margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--rule);
+}
+.backlinks-heading {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin: 0 0 10px;
+  font-family: ui-monospace, Consolas, monospace; font-weight: 500;
+}
+.backlink-group {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 4px 8px; margin-bottom: 6px; font-size: 12px;
+}
+.backlink-scope {
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  min-width: 76px; flex-shrink: 0;
+}
+.backlink-list { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.backlink-item {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+}
+.backlink-item:hover { border-bottom-style: solid; }
+
 /* ── Per-project arc page ───────────────────────────────────────────── */
 .arc-page {
   max-width: 720px; margin: 20px auto; padding: 22px 28px;
@@ -1112,6 +1136,10 @@ FILTER_WIDGET = """
           }
         }));
       }
+      // Graph chip — navigates to the static force-directed link graph page.
+      modesRow.appendChild(makeChip('Graph', 'mode mode-graph', () => {
+        window.location.href = anchorBase + 'graph.html';
+      }));
     }
 
     // --- Axis row: always present, stable positions. Click toggles active. ---
@@ -2664,7 +2692,8 @@ def render_doc_feed_entry(doc: dict, summary: dict, anchor_base: str = "./") -> 
     )
 
 
-def render_document_page(doc: dict, summary: dict, anchor_base: str = "../") -> str:
+def render_document_page(doc: dict, summary: dict, anchor_base: str = "../",
+                         backlinks: list[dict] | None = None) -> str:
     """Full-page document view. doc is a row from the documents table;
     summary is the parsed JSON from narrations.prose (scope='document').
 
@@ -2752,6 +2781,8 @@ def render_document_page(doc: dict, summary: dict, anchor_base: str = "../") -> 
         f'<h2><a href="{anchor_base}docs/{esc(doc.get("id",""))}.html" '
         f'style="color:inherit;text-decoration:none;">{esc(title)}</a></h2>'
     )
+    doc_backlinks_html = _render_backlinks_section(backlinks or [])
+
     return (
         f'<article class="doc-page">'
         f'  {title_html}'
@@ -2762,6 +2793,7 @@ def render_document_page(doc: dict, summary: dict, anchor_base: str = "../") -> 
         f'  {note_html}'
         f'  {download_html}'
         f'  {excerpt_html}'
+        f'  {doc_backlinks_html}'
         f'</article>'
     )
 
@@ -2999,13 +3031,48 @@ def render_chat_page() -> str:
     )
 
 
+def _render_backlinks_section(backlinks: list[dict]) -> str:
+    """Render a 'Referenced from' section for topic, arc, and doc pages.
+
+    Each item in backlinks is expected to have: source_scope, source_key,
+    link_type, label, scope_label, url — as returned by backlinks.get_backlinks().
+    Returns an empty string when the list is empty.
+    """
+    if not backlinks:
+        return ""
+    # Group by scope_label for a cleaner layout
+    groups: dict[str, list[dict]] = {}
+    for item in backlinks:
+        groups.setdefault(item.get("scope_label", "Other"), []).append(item)
+
+    rows_html = ""
+    for scope_label, items in groups.items():
+        links_html = "".join(
+            f'<a href="{esc(item["url"])}" class="backlink-item">{esc(item["label"])}</a>'
+            for item in items
+        )
+        rows_html += (
+            f'<div class="backlink-group">'
+            f'  <span class="backlink-scope">{esc(scope_label)}</span>'
+            f'  <span class="backlink-list">{links_html}</span>'
+            f'</div>'
+        )
+    return (
+        f'<div class="backlinks-section">'
+        f'  <h3 class="backlinks-heading">Referenced from</h3>'
+        f'  {rows_html}'
+        f'</div>'
+    )
+
+
 def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
                       dates: list[str] | None = None,
                       projects: list[str] | None = None,
                       known_docs: list[tuple[str, str]] | None = None,
                       topic_slugs: dict[str, str] | None = None,
                       slug: str = "",
-                      generated_at: str = "") -> str:
+                      generated_at: str = "",
+                      backlinks: list[dict] | None = None) -> str:
     """Standalone topic wiki page. `prose` is human-readable narration.
 
     anchor_base: path from the topic page to the site root (default '../').
@@ -3072,6 +3139,9 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
         f'View all entries tagged {esc(tag)}</a>'
     )
 
+    # "Referenced from" backlinks section
+    backlinks_html = _render_backlinks_section(backlinks or [])
+
     return (
         f'<article class="topic-page">'
         f'  <div class="topic-tag-label">topic</div>'
@@ -3079,6 +3149,7 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
         f'  {meta_html}'
         f'  {audio_html}'
         f'  <div class="topic-body">{paragraphs_html}</div>'
+        f'  {backlinks_html}'
         f'  <div class="topic-footer">{view_link}</div>'
         f'</article>'
     )
@@ -3091,7 +3162,8 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
                     top_tags: list[str] | None = None,
                     known_docs: list[tuple[str, str]] | None = None,
                     topic_slugs: dict[str, str] | None = None,
-                    generated_at: str = "") -> str:
+                    generated_at: str = "",
+                    backlinks: list[dict] | None = None) -> str:
     """Standalone project arc retrospective page.
 
     anchor_base: path from the arc page (out/projects/<name>/index.html)
@@ -3143,12 +3215,190 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
         f'View all entries for {esc(project_name)}</a>'
     )
 
+    backlinks_html = _render_backlinks_section(backlinks or [])
+
     return (
         f'<article class="arc-page">'
         f'  <div class="arc-tag-label">project arc</div>'
         f'  <h2>{esc(project_name)}</h2>'
         f'  {meta_html}'
         f'  <div class="arc-body">{paragraphs_html}</div>'
+        f'  {backlinks_html}'
         f'  <div class="arc-footer">{view_link}</div>'
         f'</article>'
     )
+
+
+def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
+    """Standalone force-directed link graph page.
+
+    Loads graph.json (written by render.py) and renders a D3 force-directed
+    visualization. Scope-colored nodes; click navigates to the target page.
+    D3 is loaded from CDN; the page degrades gracefully if offline.
+
+    node_count / edge_count are baked into the subtitle for the page header.
+    """
+    subtitle = ""
+    if node_count or edge_count:
+        subtitle = f"{node_count} nodes · {edge_count} edges"
+
+    return f"""
+<div class="graph-page">
+  <div class="graph-header">
+    <h2>Link Graph</h2>
+    {"<p class='graph-meta'>" + esc(subtitle) + "</p>" if subtitle else ""}
+    <p class="graph-legend">
+      <span class="gl-dot gl-daily"></span>Daily
+      <span class="gl-dot gl-topic"></span>Topic
+      <span class="gl-dot gl-document"></span>Document
+      <span class="gl-dot gl-project_arc"></span>Project
+      <span class="gl-dot gl-weekly"></span>Weekly
+      <span class="gl-dot gl-monthly"></span>Monthly
+    </p>
+    <p class="graph-hint">Click a node to open the page. Drag to explore. Scroll to zoom.</p>
+  </div>
+  <div id="graph-container">
+    <svg id="graph-svg"></svg>
+  </div>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+(function() {{
+  const SCOPE_COLOR = {{
+    daily:       '#c4a66a',
+    project_day: '#b06a3a',
+    weekly:      '#8a7f70',
+    monthly:     '#6a5a4a',
+    topic:       '#8a4a1f',
+    project_arc: '#4a6a8a',
+    document:    '#4d6a3a',
+  }};
+
+  const container = document.getElementById('graph-container');
+  const svg = d3.select('#graph-svg');
+  const width = container.clientWidth || 900;
+  const height = Math.max(container.clientHeight || 600, 600);
+  svg.attr('width', width).attr('height', height);
+
+  const g = svg.append('g');
+
+  // Zoom + pan
+  const zoom = d3.zoom()
+    .scaleExtent([0.1, 8])
+    .on('zoom', (event) => g.attr('transform', event.transform));
+  svg.call(zoom);
+
+  // Tooltip
+  const tooltip = d3.select('body').append('div')
+    .attr('class', 'graph-tooltip')
+    .style('opacity', 0)
+    .style('position', 'fixed')
+    .style('background', 'var(--paper,#fffaf0)')
+    .style('border', '1px solid var(--rule,#ebe3d3)')
+    .style('border-radius', '4px')
+    .style('padding', '6px 10px')
+    .style('font-size', '13px')
+    .style('pointer-events', 'none')
+    .style('z-index', '9999');
+
+  fetch('./graph.json')
+    .then(r => r.json())
+    .then(graph => {{
+      const simulation = d3.forceSimulation(graph.nodes)
+        .force('link', d3.forceLink(graph.edges)
+          .id(d => d.id)
+          .distance(60)
+          .strength(0.4))
+        .force('charge', d3.forceManyBody().strength(-120))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide(14));
+
+      const link = g.append('g')
+        .attr('class', 'links')
+        .selectAll('line')
+        .data(graph.edges)
+        .join('line')
+        .attr('stroke', '#d0c8b8')
+        .attr('stroke-opacity', 0.5)
+        .attr('stroke-width', 1);
+
+      const node = g.append('g')
+        .attr('class', 'nodes')
+        .selectAll('circle')
+        .data(graph.nodes)
+        .join('circle')
+        .attr('r', d => d.scope === 'daily' ? 5 : d.scope === 'topic' ? 8 : 6)
+        .attr('fill', d => SCOPE_COLOR[d.scope] || '#aaa')
+        .attr('stroke', '#fff')
+        .attr('stroke-width', 1.5)
+        .style('cursor', 'pointer')
+        .on('mouseover', (event, d) => {{
+          tooltip.style('opacity', 1)
+            .html('<strong>' + d.label + '</strong><br><span style="color:#8a7f70">' + d.scope + '</span>');
+        }})
+        .on('mousemove', (event) => {{
+          tooltip
+            .style('left', (event.clientX + 14) + 'px')
+            .style('top', (event.clientY - 8) + 'px');
+        }})
+        .on('mouseout', () => tooltip.style('opacity', 0))
+        .on('click', (event, d) => {{
+          if (d.url) window.location.href = d.url;
+        }})
+        .call(d3.drag()
+          .on('start', (event, d) => {{
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x; d.fy = d.y;
+          }})
+          .on('drag', (event, d) => {{ d.fx = event.x; d.fy = event.y; }})
+          .on('end', (event, d) => {{
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null; d.fy = null;
+          }})
+        );
+
+      simulation.on('tick', () => {{
+        link
+          .attr('x1', d => d.source.x)
+          .attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x)
+          .attr('y2', d => d.target.y);
+        node
+          .attr('cx', d => d.x)
+          .attr('cy', d => d.y);
+      }});
+    }})
+    .catch(err => {{
+      document.getElementById('graph-container').innerHTML =
+        '<p style="padding:20px;color:var(--warn)">Could not load graph.json: ' + err.message + '</p>';
+    }});
+}})();
+</script>
+<style>
+#graph-container {{
+  width: 100%; height: 70vh; min-height: 500px;
+  border: 1px solid var(--rule); border-radius: 4px;
+  background: var(--paper); overflow: hidden;
+}}
+#graph-svg {{ width: 100%; height: 100%; }}
+.graph-page {{ max-width: 1100px; margin: 0 auto; padding: 20px 24px; }}
+.graph-header {{ margin-bottom: 12px; }}
+.graph-header h2 {{ margin: 0 0 6px; font-size: 22px; font-weight: 500; }}
+.graph-meta {{ margin: 0 0 8px; font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace; }}
+.graph-hint {{ margin: 6px 0 10px; font-size: 12px; color: var(--muted); font-style: italic; }}
+.graph-legend {{ margin: 0 0 8px; font-size: 12px; color: var(--muted);
+  display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }}
+.gl-dot {{
+  display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 3px; vertical-align: middle;
+}}
+.gl-daily {{ background: #c4a66a; }}
+.gl-topic {{ background: #8a4a1f; }}
+.gl-document {{ background: #4d6a3a; }}
+.gl-project_arc {{ background: #4a6a8a; }}
+.gl-weekly {{ background: #8a7f70; }}
+.gl-monthly {{ background: #6a5a4a; }}
+.mode-graph {{ }}
+</style>
+"""

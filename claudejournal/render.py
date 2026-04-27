@@ -18,7 +18,13 @@ from datetime import datetime
 from pathlib import Path
 
 from claudejournal import interludes as interludemod
+from claudejournal.backlinks import get_backlinks
 from claudejournal.db import connect
+from claudejournal.post_process import (
+    extract_anchor_pairs,
+    extract_doc_link_pairs,
+    extract_topic_link_pairs,
+)
 from claudejournal.templates import (
     esc,
     layout,
@@ -28,6 +34,7 @@ from claudejournal.templates import (
     render_doc_feed_entry,
     render_document_page,
     render_feed,
+    render_graph_page,
     render_month_break,
     render_site_header,
     render_topic_page,
@@ -398,6 +405,160 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     return out
 
 
+def _rebuild_links(conn: sqlite3.Connection,
+                   known_docs: list[tuple[str, str]],
+                   known_topics: list[tuple[str, str]]) -> int:
+    """Rebuild the materialized `links` table from all narration prose.
+
+    Called once per render_site() invocation.  The table is truncated first
+    so the result is always a clean snapshot matching the current site content.
+
+    Iterates every narration row, extracts link pairs from prose using the
+    same logic that the HTML linkifiers use, and batch-inserts them.
+
+    Returns the total number of link rows written.
+    """
+    conn.execute("DELETE FROM links")
+    rows_written = 0
+    # Fetch all narration rows that have prose
+    narration_rows = conn.execute(
+        "SELECT scope, key, prose FROM narrations WHERE prose IS NOT NULL AND prose != ''"
+    ).fetchall()
+
+    inserts: list[tuple[str, str, str, str, str]] = []
+
+    for nr in narration_rows:
+        scope: str = nr["scope"]
+        key: str = nr["key"]
+        prose: str = nr["prose"]
+
+        # 1) Date anchors -> target_scope='daily'
+        for date in extract_anchor_pairs(prose):
+            inserts.append((scope, key, "daily", date, "date_anchor"))
+
+        # 2) Doc title links -> target_scope='document'
+        for doc_id in extract_doc_link_pairs(prose, known_docs):
+            inserts.append((scope, key, "document", doc_id, "doc_title"))
+
+        # 3) Topic title links -> target_scope='topic'
+        for slug in extract_topic_link_pairs(prose, known_topics):
+            inserts.append((scope, key, "topic", slug, "topic_title"))
+
+    if inserts:
+        conn.executemany(
+            "INSERT OR IGNORE INTO links "
+            "(source_scope, source_key, target_scope, target_key, link_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            inserts,
+        )
+        rows_written = len(inserts)
+
+    conn.commit()
+    return rows_written
+
+
+def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
+                      slug_map: dict[str, str] | None = None) -> None:
+    """Serialize the materialized `links` table as a D3-compatible nodes+edges
+    JSON file written to out_dir/graph.json.
+
+    Node format:  {id, scope, label, url}
+    Edge format:  {source, target, type}
+
+    Node ids use the compound '{scope}:{key}' string to ensure uniqueness
+    across scopes (a topic slug might collide with a date key otherwise).
+    """
+    slug_map = slug_map or {}
+
+    link_rows = conn.execute(
+        "SELECT source_scope, source_key, target_scope, target_key, link_type FROM links"
+    ).fetchall()
+
+    nodes_map: dict[str, dict] = {}
+    edges: list[dict] = []
+
+    def _node_id(scope: str, key: str) -> str:
+        return f"{scope}:{key}"
+
+    def _node_url(scope: str, key: str) -> str:
+        """Return a root-relative URL suitable for the graph page (which lives
+        at out/graph.html, one level below the site root)."""
+        if scope == "daily":
+            return f"./index.html#{key}"
+        if scope == "project_day":
+            parts = key.split("|", 1)
+            date = parts[1] if len(parts) == 2 else key
+            return f"./index.html#{date}"
+        if scope == "weekly":
+            return f"./weekly/{key}.html"
+        if scope == "monthly":
+            return f"./monthly/{key}.html"
+        if scope == "topic":
+            return f"./topics/{key}.html"
+        if scope == "project_arc":
+            return f"./projects/{key}/index.html"
+        if scope == "document":
+            return f"./docs/{key}.html"
+        return "./index.html"
+
+    def _node_label(scope: str, key: str) -> str:
+        if scope == "daily":
+            try:
+                return datetime.strptime(key, "%Y-%m-%d").strftime("%b %-d, %Y")
+            except (ValueError, TypeError):
+                try:
+                    return datetime.strptime(key, "%Y-%m-%d").strftime("%b %d, %Y")
+                except Exception:
+                    return key
+        if scope == "weekly":
+            return f"Week {key}"
+        if scope == "monthly":
+            try:
+                return datetime.strptime(key, "%Y-%m").strftime("%B %Y")
+            except Exception:
+                return key
+        if scope == "topic":
+            return key.replace("-", " ").title()
+        if scope == "project_arc":
+            # Resolve project_id to display_name via DB
+            row = conn.execute(
+                "SELECT display_name FROM projects WHERE id = ?", (key,)
+            ).fetchone()
+            return row["display_name"] if row else key
+        if scope == "document":
+            row = conn.execute(
+                "SELECT title, original_filename FROM documents WHERE id = ?", (key,)
+            ).fetchone()
+            if row:
+                return row["title"] or row["original_filename"] or key
+            return key
+        return key
+
+    for lr in link_rows:
+        for scope, key in [
+            (lr["source_scope"], lr["source_key"]),
+            (lr["target_scope"], lr["target_key"]),
+        ]:
+            nid = _node_id(scope, key)
+            if nid not in nodes_map:
+                nodes_map[nid] = {
+                    "id": nid,
+                    "scope": scope,
+                    "label": _node_label(scope, key),
+                    "url": _node_url(scope, key),
+                }
+        edges.append({
+            "source": _node_id(lr["source_scope"], lr["source_key"]),
+            "target": _node_id(lr["target_scope"], lr["target_key"]),
+            "type": lr["link_type"],
+        })
+
+    graph = {"nodes": list(nodes_map.values()), "edges": edges}
+    (out_dir / "graph.json").write_text(
+        json.dumps(graph, separators=(",", ":")), encoding="utf-8"
+    )
+
+
 def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "daily").mkdir(exist_ok=True)
@@ -502,6 +663,14 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         (tag, _slug_map_global.get(tag, tag)) for tag in _rendered_topic_tags
     ]
 
+    # ---------- Rebuild materialized link graph ----------
+    # Run early so backlinks are available when rendering topic/arc/doc pages.
+    # Narration prose is written by the narrate stage BEFORE render runs, so
+    # the DB already has the current prose when we arrive here.  The table is
+    # truncated + rebuilt, making this idempotent.
+    link_count = _rebuild_links(conn, known_docs_all, known_topics_all)
+    stats["links"] = link_count
+
     entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
                                  tags_by_date=tags_by_date,
                                  known_topics=known_topics_all)
@@ -584,6 +753,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                         top_tags_raw[t.strip().lower()] = top_tags_raw.get(t.strip().lower(), 0) + 1
             top_tags = [t for t, _ in sorted(top_tags_raw.items(), key=lambda x: -x[1])][:8]
 
+            arc_backlinks = get_backlinks(conn, "project_arc", pid, anchor_base="../../")
             page_html = render_arc_page(
                 pname, arc_row["prose"], anchor_base="../../",
                 first_date=(date_bounds["first_date"] or "") if date_bounds else "",
@@ -593,6 +763,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                 known_docs=known_docs_all,
                 topic_slugs=_slug_map_global,
                 generated_at=arc_row["generated_at"] or "",
+                backlinks=arc_backlinks,
             )
             header = render_site_header(
                 site_title="ClaudeJournal",
@@ -706,7 +877,9 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             "_tags_list": tags,
         }
         pretty_title = doc["title"] or doc["original_filename"] or doc["id"]
-        body_html = render_document_page(doc, summary, anchor_base="../")
+        doc_backlinks = get_backlinks(conn, "document", dr["id"], anchor_base="../")
+        body_html = render_document_page(doc, summary, anchor_base="../",
+                                         backlinks=doc_backlinks)
         header = render_site_header(
             site_title="ClaudeJournal",
             subtitle=f"Document · {pretty_title}",
@@ -752,6 +925,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                 dates_set.add(r["date"])
                 projs_set.add(r["pname"])
 
+        topic_backlinks = get_backlinks(conn, "topic", slug, anchor_base="../")
         page_html = render_topic_page(
             tag, prose, anchor_base="../",
             dates=sorted(dates_set),
@@ -760,6 +934,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             topic_slugs=slug_map,
             slug=slug,
             generated_at=gen_at,
+            backlinks=topic_backlinks,
         )
         pretty_tag = tag.replace("-", " ").title()
         header = render_site_header(
@@ -791,6 +966,26 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         )
         (out_dir / "daily" / f"{date}.html").write_text(html_page, encoding="utf-8")
         stats["daily_redirect"] += 1
+
+    # ---------- Static graph.json + graph.html for the D3 link-graph view ----------
+    _write_graph_json(conn, out_dir, slug_map=_slug_map_global)
+    _node_count = conn.execute(
+        "SELECT COUNT(DISTINCT source_scope || ':' || source_key) + "
+        "COUNT(DISTINCT target_scope || ':' || target_key) FROM links"
+    ).fetchone()[0] or 0
+    _edge_count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] or 0
+    graph_body = render_graph_page(node_count=_node_count, edge_count=_edge_count)
+    graph_header = render_site_header(
+        site_title="ClaudeJournal",
+        subtitle="Link Graph",
+        **filter_data,
+    )
+    (out_dir / "graph.html").write_text(
+        layout("Link Graph", graph_header + graph_body + "<footer>claudejournal</footer>",
+               anchor_base="./"),
+        encoding="utf-8",
+    )
+    stats["graph"] = 1
 
     conn.close()
     return stats

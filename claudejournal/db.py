@@ -126,6 +126,23 @@ CREATE TABLE IF NOT EXISTS documents (
     added_date TEXT                 -- YYYY-MM-DD of added_at (the cascade anchor)
 );
 CREATE INDEX IF NOT EXISTS idx_documents_added_date ON documents(added_date);
+
+-- Materialized link graph.  Rebuilt from scratch on every render_site()
+-- call so the data is always consistent with the rendered HTML.
+-- source_scope / target_scope: 'daily', 'project_day', 'weekly', 'monthly',
+--   'topic', 'project_arc', 'document'.
+-- link_type: 'date_anchor' (link_anchors), 'doc_title' (link_doc_titles),
+--   'topic_title' (link_topic_titles).
+CREATE TABLE IF NOT EXISTS links (
+    source_scope TEXT NOT NULL,
+    source_key   TEXT NOT NULL,
+    target_scope TEXT NOT NULL,
+    target_key   TEXT NOT NULL,
+    link_type    TEXT NOT NULL,
+    PRIMARY KEY (source_scope, source_key, target_scope, target_key)
+);
+CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_scope, target_key);
+CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_scope, source_key);
 """
 
 
