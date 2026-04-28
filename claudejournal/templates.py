@@ -179,11 +179,21 @@ article.entry mark.search-hit,
   font-family: ui-monospace, Consolas, monospace;
   vertical-align: 0.15em;
 }
+.entry-head {
+  /* Day-identity row: title on the left, header chips (currently just
+     "updated") flowing to the right. The .meta wrapper preserves the
+     existing layout slot; chips inside use the standard inspect-chip
+     styling so they read consistently with the bottom row. */
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: 8px;
+}
+.entry-head h2 { flex: 1 1 auto; }
 .entry-head .meta {
+  flex: 0 0 auto;
   color: var(--muted); font-size: 12px;
   font-family: ui-monospace, Consolas, monospace; white-space: nowrap;
+  display: inline-flex; gap: 6px; align-items: baseline;
 }
-.entry-head .meta .mood { color: var(--accent-soft); font-style: italic; }
 
 /* TTS — per-entry play buttons. Audio is served from pre-rendered WAVs
    under out/audio/. No browser-side fallback: if a WAV is missing the
@@ -252,7 +262,17 @@ article.entry mark.search-hit,
 .inspect-row {
   margin-top: 18px; padding-top: 10px;
   border-top: 1px dotted var(--rule);
-  display: flex; flex-wrap: wrap; gap: 6px;
+  /* Four chips per row on desktop, falling to two on narrow screens.
+     Grid auto-places the chips, so 8 chips render as 4 + 4 (or 4 + 3
+     etc. when fewer present). Each chip stretches to fill its cell so
+     the row reads as a tidy table-style block rather than ragged
+     flex-wrap. */
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+@media (max-width: 600px) {
+  .inspect-row { grid-template-columns: repeat(2, 1fr); }
 }
 .inspect-chip {
   font-family: ui-monospace, Consolas, monospace; font-size: 12px;
@@ -264,6 +284,13 @@ article.entry mark.search-hit,
 .inspect-chip:hover { border-color: var(--accent-soft); color: var(--accent); }
 .inspect-chip.open {
   background: var(--accent); color: var(--paper); border-color: var(--accent);
+}
+/* Parenthetical count inside chip labels — keeps the at-a-glance signal
+   without the count dominating the chip width. Color matches the chip's
+   own muted-text shade so it reads as legibly as the label itself. */
+.inspect-chip .chip-count {
+  color: inherit; font-weight: 400;
+  margin-left: 1px;
 }
 .inspect-panel {
   margin-top: 12px; font-size: 14px; line-height: 1.6;
@@ -988,18 +1015,33 @@ footer {
   color: var(--muted); font-style: italic; text-align: center;
   padding: 40px 0; font-size: 15px;
 }
-/* Open loops banner on daily entries */
-.open-loops-banner {
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 11.5px; color: var(--warn);
+/* Loops chip panel: hybrid surface listing this day's loops inline plus
+   a "view all" link. Items are tight rows with date · project · age and
+   the friction text on a second line. */
+.loop-list { list-style: none; padding: 0; margin: 0 0 8px 0; }
+.loop-row {
+  margin: 0 0 8px 0; padding: 6px 8px;
+  border-left: 2px solid var(--warn);
+  background: var(--paper);
+}
+.loop-meta {
+  font-size: 11px; color: var(--muted);
   font-family: ui-monospace, Consolas, monospace;
-  margin-left: 10px; opacity: 0.85;
+  margin-bottom: 2px;
 }
-.open-loops-banner a {
-  color: var(--warn); text-decoration: none;
-  border-bottom: 1px dotted var(--warn);
+.loop-meta .loop-date { color: var(--fg); }
+.loop-meta .loop-proj { font-weight: 600; }
+.loop-meta .loop-age { color: var(--warn); margin-left: 4px; }
+.loop-text { font-size: 13px; line-height: 1.45; color: var(--fg); }
+.loop-more-note {
+  margin: 0; font-size: 12px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace; text-align: right;
 }
-.open-loops-banner a:hover { border-bottom-style: solid; }
+.loop-more-note a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+}
+.loop-more-note a:hover { border-bottom-style: solid; }
 
 /* ── Learnings standalone page (out/learnings.html) ─────────────────── */
 .learnings-page {
@@ -1040,25 +1082,14 @@ footer {
   color: var(--muted); font-style: italic; text-align: center;
   padding: 40px 0; font-size: 15px;
 }
-/* Learnings callout chip inline on daily entries */
-.day-learned-callout {
-  margin-top: 10px; padding: 8px 14px;
-  border: 1px solid var(--rule); border-left: 3px solid var(--ok);
-  border-radius: 4px; background: var(--paper);
-  font-size: 13px; line-height: 1.5;
-}
-.day-learned-callout-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--ok); font-family: ui-monospace, Consolas, monospace;
-  font-weight: 600; margin-bottom: 4px;
-}
-.day-learned-callout ul {
-  margin: 0; padding-left: 18px;
-}
-.day-learned-callout li { margin: 3px 0; }
-
 /* Entity chips in the inspect panel */
 .entity-group { margin: 6px 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+/* When the search filter hides every entity in a group, collapse the
+   group label too so the panel doesn't show a row of category headers
+   pointing at nothing. Uses :has() (broadly supported in modern
+   browsers); older engines fall back to showing the empty group, which
+   is harmless. */
+.entity-group:not(:has(.entity-chip:not(.hidden-by-filter))) { display: none; }
 .entity-group-label {
   font-size: 0.7rem;
   font-weight: 600;
@@ -1084,18 +1115,12 @@ footer {
 .entity-library   { color: var(--warn, #d4a017); }
 .entity-service   { color: var(--muted); }
 
-/* ── Temporal echoes banner on daily entries ─────────────────────────── */
+/* ── Temporal echoes panel (inside the "memory" inspect chip) ─────────── */
 .echo-banner {
-  margin: 6px 0 2px;
+  margin: 0;
   font-size: 12px; color: var(--muted);
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
   display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center;
-  opacity: 0.82;
-}
-.echo-banner-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--accent-soft); font-weight: 600;
-  white-space: nowrap;
 }
 .echo-item { display: inline; }
 .echo-item a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--muted); }
@@ -2989,6 +3014,48 @@ def _fmt_generated_at(iso: str) -> str:
     return raw[:19]  # graceful degrade — first 19 chars of an ISO string
 
 
+def _relative_timestamp(iso: str) -> str:
+    """Compact relative-time label for the header 'updated' chip.
+
+    Recent timestamps (< 7 days) render as 'just now', '12m ago', '4h ago',
+    or '3d ago'. Older timestamps fall back to a short absolute date
+    ('2026-04-15') so archival entries don't read as confusingly aged.
+    Returns empty string when input is unparseable.
+    """
+    if not iso:
+        return ""
+    raw = iso.strip()
+    dt = None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z",
+                "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%dT%H:%M:%S.%f",
+                "%Y-%m-%dT%H:%M:%S"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        return raw[:10]
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
+    if dt.tzinfo is None:
+        # Stored timestamps are UTC; assume so when no tz suffix.
+        dt = dt.replace(tzinfo=_tz.utc)
+    diff = (now - dt).total_seconds()
+    if diff < 0:
+        return dt.strftime("%Y-%m-%d")
+    if diff < 60:
+        return "just now"
+    if diff < 3600:
+        return f"{int(diff // 60)}m ago"
+    if diff < 86400:
+        return f"{int(diff // 3600)}h ago"
+    if diff < 7 * 86400:
+        return f"{int(diff // 86400)}d ago"
+    return dt.strftime("%Y-%m-%d")
+
+
 def _count_meta(row: dict, mood: str = "") -> str:
     # Counts live only in the inspect chips at the bottom. The header
     # carries the mood only — tone without duplication.
@@ -3002,24 +3069,42 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                                  entry_id: str,
                                  narration_generated_at: str = "",
                                  entities: list[dict] | None = None,
-                                 anchor_base: str = "./") -> str:
+                                 echoes: dict | None = None,
+                                 open_loops_items: list[dict] | None = None,
+                                 anchor_base: str = "./") -> tuple[str, str, str, str]:
     """Per-category inspect chips. Each chip toggles its own panel. Multiple
-    can be open at once. Order: learned callout → briefs → learned → prompts → moments → files → entities → updated.
+    can be open at once.
 
-    A standalone "Learned" chip lists all learning items across a day's briefs.
-    The most notable learning (longest item) is promoted to a visible callout
-    above the inspect-row chips so it's readable without expanding anything.
+    Returns (header_chips_html, header_panels_html, inspect_row_html,
+    inspect_panels_html). The caller places header_chips_html in the
+    entry header (top-right where mood used to live) and the matching
+    header_panels_html immediately under the header so the drop-down
+    lands where the user clicked. inspect_row_html + inspect_panels_html
+    go at the bottom of the article. Splitting the panels by location
+    avoids the visual disconnect of a header chip opening a panel at
+    the bottom of the entry.
 
-    entities: [{key, label, type}] list built from brief_entities for this date.
-      Each entity name is rendered as a chip linking to the entity-filtered feed.
+    Inspect-row order: briefs → learned → prompts → moments → files →
+    entities → memory → loops.
+
+    Header-row order: updated.
+
+    All meta-info-about-the-day lives in chips, never in the prose body
+    or in inline banners. The header carries only the day's identity
+    (date + the latest-update chip); the inspect row carries everything
+    else.
+
+    entities: [{key, label, type}] for this date.
+    echoes: temporal recall dict ({prior_years, recurring_friction, milestones}).
+    open_loops_items: list of loop dicts touching today's projects, oldest first.
     """
     n_files = len(files); n_prompts = len(prompts); n_snips = len(snippets)
     n_briefs = len(briefs) if briefs else 0
     # Show "Updated" chip whenever the day has *any* content to timestamp.
     if not (n_files or n_prompts or n_snips or n_briefs or narration_generated_at):
-        return ""
+        return ("", "", "", "")
 
-    # Collect all learnings from this day's briefs for the dedicated chip + callout.
+    # Collect all learnings from this day's briefs for the dedicated chip.
     all_learned: list[str] = []
     if briefs:
         for b in briefs:
@@ -3027,32 +3112,40 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                 if isinstance(item, str) and item.strip():
                     all_learned.append(item.strip())
 
-    # Build the learning callout (most notable = longest item, shown without a chip)
-    learned_callout = ""
-    if all_learned:
-        most_notable = max(all_learned, key=len)
-        # Only surface if there's a meaningful insight (at least 40 chars)
-        if len(most_notable) >= 40:
-            learned_callout = (
-                f'<div class="day-learned-callout">'
-                f'  <div class="day-learned-callout-label">Learned</div>'
-                f'  <ul>'
-                + "".join(f"<li>{esc(item)}</li>" for item in all_learned[:3])
-                + f'  </ul>'
-                f'</div>'
-            )
-
-    chips: list[str] = []
-    panels: list[str] = []
+    chips: list[str] = []         # bottom inspect row
+    header_chips: list[str] = []  # top-right of entry header (Updated only)
+    panels: list[str] = []        # panels for inspect-row chips
+    header_panels: list[str] = [] # panels for header chips (sit just below
+                                  # the header so the drop-down lands where
+                                  # the user clicked, not at the bottom of
+                                  # the article)
 
     def _add(kind: str, label: str, body: str, searchable: bool = False,
-             search_placeholder: str = "filter...") -> None:
+             search_placeholder: str = "filter...",
+             location: str = "inspect",
+             extra_chip_class: str = "",
+             count: int | None = None) -> None:
+        """Build a chip + panel pair.
+
+        `count`: optional integer that renders as a dimmed parenthetical
+        after the label, e.g. "briefs (115)". Lets the row stay legible
+        as a single line while preserving the at-a-glance signal.
+        """
         if not body:
             return
         panel_id = f"insp-{esc(entry_id)}-{kind}"
-        chips.append(
-            f'<button class="inspect-chip" type="button" data-panel="{panel_id}">'
-            f'{esc(label)}</button>'
+        cls = "inspect-chip"
+        if extra_chip_class:
+            cls += f" {extra_chip_class}"
+        if count is not None:
+            label_html = (
+                f'{esc(label)} <span class="chip-count">({count})</span>'
+            )
+        else:
+            label_html = esc(label)
+        chip_html = (
+            f'<button class="{cls}" type="button" data-panel="{panel_id}">'
+            f'{label_html}</button>'
         )
         if searchable:
             inner = (
@@ -3064,7 +3157,13 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
             )
         else:
             inner = body
-        panels.append(f'<div class="inspect-panel" id="{panel_id}" hidden>{inner}</div>')
+        panel_html = f'<div class="inspect-panel" id="{panel_id}" hidden>{inner}</div>'
+        if location == "header":
+            header_chips.append(chip_html)
+            header_panels.append(panel_html)
+        else:
+            chips.append(chip_html)
+            panels.append(panel_html)
 
     # --- briefs (structured, rich) ---
     if briefs:
@@ -3086,17 +3185,24 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
             # non-matching briefs wholesale while highlighting inside matches.
             body_parts.append(f'<div class="filterable brief-block">{"".join(bp)}</div>')
         _add("briefs",
-             f"{n_briefs} brief{'s' if n_briefs != 1 else ''}",
+             "briefs",
              "".join(body_parts),
-             searchable=True, search_placeholder="filter briefs...")
+             searchable=True, search_placeholder="filter briefs...",
+             count=n_briefs)
 
     # --- learned (dedicated chip: all learning items across the day's briefs) ---
     if all_learned:
         n_learned = len(all_learned)
-        learned_items_html = "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in all_learned) + "</ul>"
+        learned_items_html = (
+            "<ul>"
+            + "".join(f'<li class="filterable">{esc(x)}</li>' for x in all_learned)
+            + "</ul>"
+        )
         _add("learned",
-             f"{n_learned} learned",
-             learned_items_html)
+             "learned",
+             learned_items_html,
+             searchable=True, search_placeholder="filter learned...",
+             count=n_learned)
 
     # --- prompts ---
     if prompts:
@@ -3106,14 +3212,16 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
             if p.get("kind") == "correction": cls += " correction"
             elif p.get("kind") == "appreciation": cls += " appreciation"
             items.append(f'<blockquote class="{cls}">{esc(p["summary"])}</blockquote>')
-        _add("prompts", f"{n_prompts} prompts", "".join(items),
-             searchable=True, search_placeholder="filter prompts...")
+        _add("prompts", "prompts", "".join(items),
+             searchable=True, search_placeholder="filter prompts...",
+             count=n_prompts)
 
     # --- snippets (notable moments) ---
     if snippets:
         items = [f'<div class="snippet filterable">{esc(s["text"])}</div>' for s in snippets]
-        _add("moments", f"{n_snips} moments", "".join(items),
-             searchable=True, search_placeholder="filter moments...")
+        _add("moments", "moments", "".join(items),
+             searchable=True, search_placeholder="filter moments...",
+             count=n_snips)
 
     # --- files ---
     if files:
@@ -3122,8 +3230,9 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
             f'<span class="meta">· {f["touch_count"]}×</span></li>'
             for f in files
         )
-        _add("files", f"{n_files} files", f"<ul class='files'>{items}</ul>",
-             searchable=True, search_placeholder="filter files...")
+        _add("files", "files", f"<ul class='files'>{items}</ul>",
+             searchable=True, search_placeholder="filter files...",
+             count=n_files)
 
     # --- entities (named-entity chip: people, libraries, AI models, services) ---
     # Links each entity name to the entity-filtered feed view so clicking
@@ -3141,7 +3250,7 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                 continue
             items_html = "".join(
                 f'<a href="{esc(anchor_base)}index.html#axis=entity&value={esc(ent["key"])}" '
-                f'class="entity-chip entity-{esc(etype)}">'
+                f'class="entity-chip entity-{esc(etype)} filterable">'
                 f'{esc(ent["label"])}</a>'
                 for ent in grouped[etype]
             )
@@ -3152,8 +3261,68 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                 f'</div>'
             )
         n_ents = len(entities)
-        _add("entities", f"{n_ents} tool{'' if n_ents == 1 else 's'}",
-             "".join(parts))
+        _add("entities", "tools", "".join(parts),
+             searchable=True, search_placeholder="filter tools...",
+             count=n_ents)
+
+    # --- memory (temporal recall echoes) ---
+    # Prior-year links, recurring-friction patterns, and project anniversaries.
+    # Was a banner between header and prose; now lives here so the entry body
+    # is uninterrupted prose and meta-info-about-the-day is uniformly grouped.
+    echo_items = _build_echo_items(echoes or {}, anchor_base=anchor_base)
+    if echo_items:
+        n_echoes = len(echo_items)
+        echo_panel = (
+            '<div class="echo-banner">'
+            + '<span class="echo-sep"> · </span>'.join(echo_items)
+            + '</div>'
+        )
+        _add("memory", "memory", echo_panel, count=n_echoes)
+
+    # --- loops (open frictions touching this day's projects) ---
+    # Hybrid panel: lists this day's loops inline, plus a "view all on
+    # Loops page" link at the bottom. Click the chip to expand; click the
+    # link inside to navigate to the standing page for the full corpus.
+    loops_items = open_loops_items or []
+    if loops_items:
+        n_loops = len(loops_items)
+        loop_rows: list[str] = []
+        for ll in loops_items[:30]:  # cap inline list at 30 items
+            ld = ll.get("date", "")
+            lp = ll.get("project_name", ll.get("project_id", "?"))
+            la = ll.get("age_days")
+            age_str = f' <span class="loop-age">{la}d</span>' if la is not None else ""
+            ltext = ll.get("friction", "").strip()
+            loop_rows.append(
+                f'<li class="loop-row filterable">'
+                f'  <div class="loop-meta">'
+                f'    <span class="loop-date">{esc(ld)}</span> · '
+                f'    <span class="loop-proj">{esc(lp)}</span>{age_str}'
+                f'  </div>'
+                f'  <div class="loop-text">{esc(ltext)}</div>'
+                f'</li>'
+            )
+        more_note = ""
+        if n_loops > len(loop_rows):
+            more_note = (
+                f'<p class="loop-more-note">'
+                f'Showing {len(loop_rows)} of {n_loops}. '
+                f'<a href="{esc(anchor_base)}loops.html">View all on Loops page →</a>'
+                f'</p>'
+            )
+        else:
+            more_note = (
+                f'<p class="loop-more-note">'
+                f'<a href="{esc(anchor_base)}loops.html">View all on Loops page →</a>'
+                f'</p>'
+            )
+        loops_body = (
+            f'<ul class="loop-list">{"".join(loop_rows)}</ul>'
+            f'{more_note}'
+        )
+        _add("loops", "loops", loops_body,
+             searchable=True, search_placeholder="filter loops...",
+             count=n_loops)
 
     # --- updated (narration + brief generation timestamps) ---
     # One chip showing when this entry was last written. The panel lists the
@@ -3179,14 +3348,23 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
         if rows:
             brief_rows = "<p><strong>Briefs generated:</strong></p><ul>" + "".join(rows) + "</ul>"
     if narration_line or brief_rows:
-        chip_label = _fmt_generated_at(narration_generated_at) if narration_generated_at else "timestamps"
-        _add("updated", f"Updated {chip_label}", narration_line + brief_rows)
+        # Header chip uses a compact relative-time label like "updated 2h ago"
+        # (or absolute date if older than 7 days). Falls back to "updated" when
+        # we have no narration timestamp but do have brief timestamps.
+        if narration_generated_at:
+            chip_label = f"updated {_relative_timestamp(narration_generated_at)}"
+        else:
+            chip_label = "updated"
+        _add("updated", chip_label, narration_line + brief_rows,
+             location="header")
 
-    return (
-        f'{learned_callout}'
-        f'<div class="inspect-row">{"".join(chips)}</div>'
-        f'{"".join(panels)}'
+    inspect_row_html = (
+        f'<div class="inspect-row">{"".join(chips)}</div>' if chips else ""
     )
+    header_chips_html = "".join(header_chips)
+    header_panels_html = "".join(header_panels)
+    panels_html = "".join(panels)
+    return (header_chips_html, header_panels_html, inspect_row_html, panels_html)
 
 
 def _iso_week_of(date: str) -> str:
@@ -3363,60 +3541,55 @@ def render_interlude_block(interlude: dict | None) -> str:
             f'{body}</div>')
 
 
-def _render_echo_banner(echoes: dict, anchor_base: str, date: str) -> str:
-    """Render the subtle temporal recall banner for a daily entry.
+def _build_echo_items(echoes: dict, anchor_base: str) -> list[str]:
+    """Return a list of <span class='echo-item'> strings for the day's
+    echoes (prior years, recurring friction, milestones). Centralises the
+    item rendering so both the inline banner (legacy) and the inspect-chip
+    panel can share output.
 
-    Returns an empty string when there are no echoes (no banner rendered).
-    Banner is placed between the entry header and the body prose.
+    Empty list → caller should not render any echoes surface.
     """
     if not echoes:
-        return ""
+        return []
     prior_years = echoes.get("prior_years") or []
     recurring = echoes.get("recurring_friction") or []
     milestones = echoes.get("milestones") or []
-    if not (prior_years or recurring or milestones):
-        return ""
-
     items: list[str] = []
-
-    for py in prior_years[:3]:  # cap at 3 prior-year links
+    for py in prior_years[:3]:
         py_date = py["date"]
         yr_diff = py["year_diff"]
         label = f"{yr_diff} year{'s' if yr_diff != 1 else ''} ago"
         snippet = py.get("snippet", "")
-        if snippet:
-            title_attr = f' title="{esc(snippet)}"'
-        else:
-            title_attr = ""
+        title_attr = f' title="{esc(snippet)}"' if snippet else ""
         items.append(
             f'<span class="echo-item">{esc(label)}: '
             f'<a href="{anchor_base}#{esc(py_date)}"{title_attr}>{esc(py_date)}</a>'
             f'</span>'
         )
-
-    for rf in recurring[:2]:  # cap at 2 recurring friction items
+    for rf in recurring[:2]:
         tag = rf["tag"]
         count = rf["count"]
         items.append(
             f'<span class="echo-item">recurring friction &ldquo;{esc(tag)}&rdquo; '
             f'({count}× across {count} dates)</span>'
         )
-
-    for ms in milestones[:2]:  # cap at 2 milestones
+    for ms in milestones[:2]:
         items.append(
             f'<span class="echo-item">{esc(ms["project_name"])} is {esc(ms["label"])}</span>'
         )
+    return items
 
-    if not items:
-        return ""
 
-    inner = '<span class="echo-sep"> · </span>'.join(items)
-    return (
-        f'<div class="echo-banner">'
-        f'<span class="echo-banner-label">memory</span> '
-        f'{inner}'
-        f'</div>'
-    )
+def _echo_chip_count(echoes: dict) -> int:
+    """How many echo items would be rendered for this day. Used to decide
+    whether to surface the inspect chip and to label its count."""
+    if not echoes:
+        return 0
+    n = 0
+    n += min(len(echoes.get("prior_years") or []), 3)
+    n += min(len(echoes.get("recurring_friction") or []), 2)
+    n += min(len(echoes.get("milestones") or []), 2)
+    return n
 
 
 def _render_annotation_block(annotations: list[dict]) -> str:
@@ -3467,6 +3640,7 @@ def render_day_entry(date: str, narration: str, mood: str,
                      known_docs: list[tuple[str, str]] | None = None,
                      known_topics: list[tuple[str, str]] | None = None,
                      open_loops_count: int = 0,
+                     open_loops_items: list[dict] | None = None,
                      entities: list[dict] | None = None,
                      echoes: dict | None = None,
                      annotations: list[dict] | None = None) -> str:
@@ -3489,7 +3663,10 @@ def render_day_entry(date: str, narration: str, mood: str,
     pretty = _pretty_date_safe(date)
     known_docs = known_docs or []
     known_topics = known_topics or []
-    meta = _count_meta(counts_row, mood)
+    # Mood text is no longer surfaced in the header — the chip row carries
+    # all meta-info-about-the-day. Keeping the underlying mood label as a
+    # data attribute (data-mood) so the filter widget can still match on it.
+    _ = mood  # currently unused; kept in the API for back-compat
 
     if narration:
         paragraphs = "".join(
@@ -3506,24 +3683,21 @@ def render_day_entry(date: str, narration: str, mood: str,
     else:
         body = '<div class="entry-empty">Nothing happened today.</div>'
 
-    activity = _render_activity_disclosure(counts_row, prompts, snippets, files, briefs,
-                                           entry_id=date,
-                                           narration_generated_at=narration_generated_at,
-                                           entities=entities,
-                                           anchor_base=anchor_base)
-
-    # Open loops banner — only shown when there are stale unresolved items
-    loops_html = ""
-    if open_loops_count > 0:
-        label = f"{open_loops_count} open loop{'s' if open_loops_count != 1 else ''}"
-        loops_html = (
-            f'<span class="open-loops-banner">'
-            f'<a href="{anchor_base}loops.html" title="View open loops">{esc(label)}</a>'
-            f'</span>'
-        )
-
-    # Temporal recall (echo) banner — only shown when echoes exist
-    echo_html = _render_echo_banner(echoes or {}, anchor_base=anchor_base, date=date)
+    (header_chips_html, header_panels_html,
+     inspect_row_html, panels_html) = _render_activity_disclosure(
+        counts_row, prompts, snippets, files, briefs,
+        entry_id=date,
+        narration_generated_at=narration_generated_at,
+        entities=entities,
+        echoes=echoes,
+        open_loops_items=open_loops_items or [],
+        anchor_base=anchor_base,
+    )
+    # Note: the open-loops surface is now an inspect chip ("loops") inside
+    # inspect_row_html, with a hybrid panel that lists this day's loops
+    # plus a "view all on Loops page" link. The old top-of-entry loops
+    # banner has been removed in favor of the chip.
+    _ = open_loops_count  # legacy parameter; the chip uses items directly
 
     # Annotation blocks (below AI prose) — rendered from pre-loaded annotation rows.
     # The JS ANNOTATION_WIDGET also dynamically re-loads/updates these on save/delete.
@@ -3566,14 +3740,15 @@ def render_day_entry(date: str, narration: str, mood: str,
         f'data-entities="{esc(entities_attr)}">'
         f'  <header class="entry-head">'
         f'    <h2><a href="#{esc(date)}" style="color:inherit;text-decoration:none;">{esc(pretty)} {year_html}</a></h2>'
-        f'    <span class="meta">{meta}{loops_html}</span>'
+        f'    <span class="meta">{header_chips_html}</span>'
         f'  </header>'
-        f'  {echo_html}'
+        f'  {header_panels_html}'
         f'  {body}'
         f'  {annotations_html}'
         f'  {annotation_form}'
         f'  {annotate_btn}'
-        f'  {activity}'
+        f'  {inspect_row_html}'
+        f'  {panels_html}'
         f'</article>'
     )
 

@@ -336,6 +336,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
                        tags_by_date: dict[str, list[str]] | None = None,
                        known_topics: list[tuple[str, str]] | None = None,
                        open_loops_by_project: dict[str, int] | None = None,
+                       open_loops_items_by_project: dict[str, list[dict]] | None = None,
                        entities_by_date: dict[str, list[str]] | None = None,
                        echoes_by_date: dict[str, dict] | None = None,
                        annotations_by_date: dict[str, list[dict]] | None = None) -> list[str]:
@@ -368,6 +369,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     known_topics = known_topics or []
     tags_by_date = tags_by_date or {}
     open_loops_by_project = open_loops_by_project or {}
+    open_loops_items_by_project = open_loops_items_by_project or {}
     entities_by_date = entities_by_date or {}
     echoes_by_date = echoes_by_date or {}
     annotations_by_date = annotations_by_date or {}
@@ -414,6 +416,20 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
         # loops with age_days >= 7).
         day_pids = date_project_ids.get(date, [])
         day_open_loops = sum(open_loops_by_project.get(p, 0) for p in day_pids)
+        # Collect the actual loop items for this day (deduplicated across
+        # projects; a single loop only appears once even if its project_id
+        # is hit multiple times). Sorted oldest-first so the most-stale
+        # frictions surface first when the chip panel opens.
+        day_loop_items: list[dict] = []
+        seen_loop_ids: set[tuple[str, str, str]] = set()
+        for p in day_pids:
+            for loop in open_loops_items_by_project.get(p, []):
+                k = (loop.get("date", ""), loop.get("project_id", ""), loop.get("friction", ""))
+                if k in seen_loop_ids:
+                    continue
+                seen_loop_ids.add(k)
+                day_loop_items.append(loop)
+        day_loop_items.sort(key=lambda l: (l.get("date", ""), l.get("project_name", "")))
 
         out.append(render_day_entry(
             date, bundle["narration"], bundle["mood"],
@@ -430,6 +446,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             known_docs=known_docs,
             known_topics=known_topics,
             open_loops_count=day_open_loops,
+            open_loops_items=day_loop_items,
             entities=entities_by_date.get(date, []),
             echoes=echoes_by_date.get(date),
             annotations=annotations_by_date.get(date, []),
@@ -895,16 +912,18 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     stats["links"] = link_count
 
     # ---------- Pre-compute open loops for feed banners ----------
-    # Build {project_id: count} for loops older than 7 days.  This is cheap
-    # (pure text ops) and is used by every day entry in _render_feed_pages.
+    # Build per-project: a count (used by the open-loops chip badge) AND
+    # the actual loop dicts (used by the chip panel to list this day's
+    # frictions inline). Pure text ops; both maps are tiny.
     from claudejournal.openloops import compute_open_loops as _compute_open_loops
     _all_open_loops = _compute_open_loops(conn)
     _open_loops_by_project: dict[str, int] = {}
+    _open_loops_items_by_project: dict[str, list[dict]] = {}
     for _loop in _all_open_loops:
         if _loop["age_days"] >= 7:
-            _open_loops_by_project[_loop["project_id"]] = (
-                _open_loops_by_project.get(_loop["project_id"], 0) + 1
-            )
+            pid = _loop["project_id"]
+            _open_loops_by_project[pid] = _open_loops_by_project.get(pid, 0) + 1
+            _open_loops_items_by_project.setdefault(pid, []).append(_loop)
 
     # ---------- Pre-compute temporal echoes for feed banners ----------
     # compute_all_echoes() does a single pass over all brief/narration data;
@@ -1083,6 +1102,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                                  tags_by_date=tags_by_date,
                                  known_topics=known_topics_all,
                                  open_loops_by_project=_open_loops_by_project,
+                                 open_loops_items_by_project=_open_loops_items_by_project,
                                  entities_by_date=entities_by_date,
                                  echoes_by_date=_echoes_by_date,
                                  annotations_by_date=_annotations_by_date)
