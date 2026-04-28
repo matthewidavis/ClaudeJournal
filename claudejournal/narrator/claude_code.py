@@ -84,12 +84,21 @@ Rules you MUST follow:
 Output ONLY valid JSON matching the supplied schema. No prose, no markdown, no backticks."""
 
 PROMPT_VERSION = "v2"
-# v5 adds the PINNED CORRECTIONS block (Phase E annotations). Narrations written
-# under v4 will regenerate on first run only when the date has annotations;
-# dates without annotations are unaffected by the version bump because the
-# input hash includes the annotation content (empty list → same hash as before).
-# We bump the version here so annotated dates always regenerate when annotations
-# are added or changed, via the hash cascade in narrate._narration_input_hash.
+# v5 adds the PINNED CORRECTIONS block (Phase E annotations).
+#
+# IMPORTANT: bumping this version invalidates the cache for EVERY existing
+# daily narration, not just annotated ones. NARRATION_PROMPT_VERSION is
+# folded into _narration_input_hash unconditionally, so v4 and v5 produce
+# different digests for identical briefs even with zero annotations. The
+# next pipeline run after this bump will regenerate every daily narration
+# in the corpus — for un-annotated dates the new prose will be functionally
+# similar to v4, just rewritten under the new prompt framing.
+#
+# This is intentional: annotation-aware narrations are a meaningfully
+# different contract than v4, and a clean cutover is simpler than a
+# fragmented "some are v4, some are v5" corpus. The cost is one full
+# sonnet sweep over the daily set on the first pipeline run after this
+# change.
 NARRATION_PROMPT_VERSION = "v5"
 
 

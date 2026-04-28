@@ -37,6 +37,11 @@ body {
   font-size: 38px; margin: 0; letter-spacing: -0.01em;
   font-weight: 500; color: var(--fg);
 }
+.site-head h1 a.site-home-link {
+  color: inherit; text-decoration: none;
+  cursor: pointer; transition: opacity 0.15s ease;
+}
+.site-head h1 a.site-home-link:hover { opacity: 0.7; }
 .site-head .sub {
   color: var(--muted); font-size: 14px; margin-top: 6px;
   font-family: ui-monospace, "SF Mono", Consolas, monospace;
@@ -48,6 +53,10 @@ body {
   display: flex; flex-wrap: wrap; gap: 6px; justify-content: center;
   min-height: 26px;
 }
+/* Navigation row sits beneath the filter-modes row with a touch of extra
+   space so the two reads as visually distinct groups. */
+.filter-nav { margin-top: 4px; margin-bottom: 4px; opacity: 0.95; }
+.filter-nav:empty { display: none; }
 .filter-axes { margin-bottom: 8px; }
 .filter-options:empty { display: none; }
 .filter-chip {
@@ -1000,7 +1009,12 @@ footer {
 .learnings-meta {
   color: var(--muted); font-size: 12px;
   font-family: ui-monospace, Consolas, monospace;
-  margin-bottom: 24px;
+  margin-bottom: 14px;
+}
+.learnings-search {
+  /* Sticky filter input mirrors the inline inspect-search look but
+     widens for the standalone-page context. */
+  margin-bottom: 18px;
 }
 .learnings-tag-group { margin-bottom: 32px; }
 .learnings-tag-heading {
@@ -1493,8 +1507,10 @@ FILTER_WIDGET = """
 
   function clearChildren(el) { while (el.firstChild) el.removeChild(el.firstChild); }
 
+  const navRow = document.getElementById('filter-nav');
   function render() {
     if (modesRow) clearChildren(modesRow);
+    if (navRow) clearChildren(navRow);
     clearChildren(axesRow);
     clearChildren(options);
 
@@ -1503,7 +1519,15 @@ FILTER_WIDGET = """
     // exclusive — clicking the active one reverts to 'all'. ---
     if (modesRow) {
       const anchorBase = window.__ANCHOR_BASE__ || './';
-      const onHomePage = (anchorBase === './' || anchorBase === '');
+      // "Home" specifically means the main feed (index.html at site root).
+      // Standalone pages at site root (loops.html / graph.html /
+      // learnings.html / echoes.html) share anchor_base='./' but aren't
+      // home — they're nav destinations. Treat them as deep-link pages
+      // for Clear-chip purposes so the user always has a way back.
+      const _path = (window.location.pathname || '').toLowerCase();
+      const _atRoot = (anchorBase === './' || anchorBase === '');
+      const _isIndex = _path === '/' || _path.endsWith('/index.html') || _path === '';
+      const onHomePage = _atRoot && _isIndex;
       const filtered = !!state.axis || state.views.size > 0;
       // Clear chip — sits at the end of the modes row. On deep-link pages
       // it's always present and navigates back to the main feed. On the
@@ -1529,6 +1553,9 @@ FILTER_WIDGET = """
           apply();
         }));
       });
+      // Clear chip stays trailing on the filter row (Row 0a). On deep-link
+      // pages (including the standalone nav targets) it always shows; on
+      // the main feed it shows only when filters are active.
       if (showClear) {
         modesRow.appendChild(makeChip('Clear', 'home', () => {
           if (onHomePage) {
@@ -1541,22 +1568,26 @@ FILTER_WIDGET = """
           }
         }));
       }
-      // Graph chip — navigates to the static force-directed link graph page.
-      modesRow.appendChild(makeChip('Graph', 'mode mode-graph', () => {
-        window.location.href = anchorBase + 'graph.html';
-      }));
-      // Loops chip — navigates to the open loops standing page.
-      modesRow.appendChild(makeChip('Loops', 'mode mode-loops', () => {
-        window.location.href = anchorBase + 'loops.html';
-      }));
-      // Learnings chip — navigates to the learnings standing page.
-      modesRow.appendChild(makeChip('Learnings', 'mode mode-learnings', () => {
-        window.location.href = anchorBase + 'learnings.html';
-      }));
-      // Echoes chip — navigates to the temporal recall standing page.
-      modesRow.appendChild(makeChip('Echoes', 'mode mode-echoes', () => {
-        window.location.href = anchorBase + 'echoes.html';
-      }));
+    }
+    // Navigation chips (Graph / Loops / Learnings / Echoes) live on their
+    // own row (Row 0b) so they read as destinations, not filter state.
+    // Each navigates to a standalone page; on those pages the chip is
+    // marked .active for visual confirmation.
+    if (navRow) {
+      const anchorBaseN = window.__ANCHOR_BASE__ || './';
+      const navTargets = [
+        ['Graph', 'graph', 'graph.html'],
+        ['Loops', 'loops', 'loops.html'],
+        ['Learnings', 'learnings', 'learnings.html'],
+        ['Echoes', 'echoes', 'echoes.html'],
+      ];
+      const currentPath = (window.location.pathname || '').toLowerCase();
+      navTargets.forEach(([label, key, href]) => {
+        const isActive = currentPath.endsWith('/' + href);
+        navRow.appendChild(makeChip(label, 'mode mode-' + key + (isActive ? ' active' : ''), () => {
+          window.location.href = anchorBaseN + href;
+        }));
+      });
     }
 
     // --- Axis row: always present, stable positions. Click toggles active. ---
@@ -1902,6 +1933,14 @@ FILTER_WIDGET = """
     if (location.hash !== hash) history.replaceState(null, '', location.pathname + hash);
   }
   function apply() { render(); applyVisibility(); syncUrl(); }
+  // Global reset hook — used by the site-title link and anywhere else
+  // that wants Clear-equivalent semantics without going through the chip.
+  window.__resetFilters = function() {
+    state.axis = null; state.value = null; state.mode = null;
+    state.views.clear();
+    saveViews(state.views);
+    apply();
+  };
   function parseHash() {
     const h = location.hash.replace(/^#/, '');
     if (!h) return;
@@ -3617,9 +3656,18 @@ def render_site_header(*, site_title: str, subtitle: str,
                    or entities)
     filter_bar = ""
     if has_any:
+        # Two visual rows in the filter bar:
+        #   * filter-modes — entry-type filters (Find, Daily, Weekly,
+        #     Monthly, Library) plus the trailing Clear chip. Everything
+        #     here changes what's shown on the current page.
+        #   * filter-nav — destination chips (Graph, Loops, Learnings,
+        #     Echoes). Clicking these navigates to a standalone page.
+        # Splitting them prevents users from confusing "filter the feed"
+        # with "go to a different surface."
         filter_bar = (
             '<div class="filter-bar">'
             '  <div class="filter-row filter-modes" id="filter-modes"></div>'
+            '  <div class="filter-row filter-nav" id="filter-nav"></div>'
             '  <div class="filter-row filter-axes" id="filter-axes"></div>'
             '  <div class="filter-row filter-options" id="filter-options"></div>'
             '</div>'
@@ -3629,9 +3677,22 @@ def render_site_header(*, site_title: str, subtitle: str,
         f'window.__FILTERS__ = {_json.dumps({"projects": projects or [], "weeks": weeks or [], "months": months or [], "moods": moods or [], "learnings": learnings or [], "years": years or [], "tags": tags or [], "topic_pages": topic_pages or [], "topic_pages_map": topic_pages_map or {}, "arc_pages": arc_pages or [], "entities": entities or []})};\n'
         f'</script>'
     )
+    # The site title links to Home from anywhere. On a deep-link page it
+    # navigates back to the main feed. On the main feed itself it acts as
+    # Clear: resets all filter chips AND scrolls to top, so a single click
+    # always lands on a pristine, unfiltered home view. The reset reaches
+    # into the chip widget via window.__resetFilters (defined in
+    # FILTER_WIDGET).
     head = (
         f'<header class="site-head">'
-        f'  <h1>{esc(site_title)}</h1>'
+        f'  <h1><a class="site-home-link" href="#" '
+        f'onclick="event.preventDefault(); '
+        f'var b=window.__ANCHOR_BASE__||\'./\'; '
+        f'var p=(window.location.pathname||\'\').toLowerCase(); '
+        f'var atIndex=(b===\'./\'||b===\'\')&&(p===\'/\'||p.endsWith(\'/index.html\')||p===\'\'); '
+        f'if(atIndex){{ if(window.__resetFilters)window.__resetFilters(); window.scrollTo(0,0); }} '
+        f'else {{ window.location.href=b+\'index.html\'; }}'
+        f'">{esc(site_title)}</a></h1>'
         f'  <div class="sub">{esc(subtitle)}</div>'
         f'  {filter_bar}'
         f'</header>'
@@ -3912,6 +3973,7 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
       <span class="gl-dot gl-monthly"></span>Monthly
     </p>
     <p class="graph-hint">Click a node to open the page. Drag to explore. Scroll to zoom.</p>
+    <div id="graph-filter-banner" class="graph-filter-banner" hidden></div>
   </div>
   <div id="graph-container">
     <svg id="graph-svg"></svg>
@@ -3929,6 +3991,56 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
     project_arc: '#4a6a8a',
     document:    '#4d6a3a',
   }};
+
+  // ── URL hash → active filters ────────────────────────────────────────
+  // Two formats are honored. Both can appear at once; they intersect.
+  //   Single-axis (chip widget format):  #axis=project&value=ChromaKey
+  //   Multi-axis (graph-only format):    #project=ChromaKey&topic=architecture&year=2026
+  // Multi-axis wins when both are present, since it's strictly more
+  // expressive. Recognised axes: project, topic, year, month, week, entity.
+  function parseFilters() {{
+    const h = (window.location.hash || '').replace(/^#/, '');
+    if (!h) return {{}};
+    const params = {{}};
+    h.split('&').forEach(kv => {{
+      const eq = kv.indexOf('=');
+      if (eq < 0) return;
+      const k = decodeURIComponent(kv.slice(0, eq));
+      const v = decodeURIComponent(kv.slice(eq + 1));
+      params[k] = v;
+    }});
+    const KNOWN = ['project','topic','year','month','week','entity'];
+    const filters = {{}};
+    KNOWN.forEach(k => {{ if (params[k]) filters[k] = params[k]; }});
+    if (params.axis && KNOWN.includes(params.axis) && params.value) {{
+      // Don't overwrite if multi-axis already supplied that key.
+      if (!filters[params.axis]) filters[params.axis] = params.value;
+    }}
+    return filters;
+  }}
+
+  function nodePassesFilters(node, filters) {{
+    // A node passes only when EVERY active filter matches its metadata.
+    // Nodes lacking a metadata key for an active filter are hidden — that
+    // keeps the result a true intersection rather than a permissive union.
+    for (const k in filters) {{
+      if (node[k] === undefined || node[k] === null) return false;
+      if (String(node[k]) !== String(filters[k])) return false;
+    }}
+    return true;
+  }}
+
+  function buildFilterBanner(filters) {{
+    const banner = document.getElementById('graph-filter-banner');
+    if (!banner) return;
+    const keys = Object.keys(filters);
+    if (!keys.length) {{ banner.setAttribute('hidden', ''); return; }}
+    const parts = keys.map(k => '<span class="gfb-pill">' + k + ': <strong>'
+      + filters[k] + '</strong></span>');
+    banner.innerHTML = 'Filtered: ' + parts.join(' ')
+      + ' <a class="gfb-clear" href="./graph.html">clear filter</a>';
+    banner.removeAttribute('hidden');
+  }}
 
   const container = document.getElementById('graph-container');
   const svg = d3.select('#graph-svg');
@@ -3957,11 +4069,39 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
     .style('pointer-events', 'none')
     .style('z-index', '9999');
 
+  const filters = parseFilters();
+  buildFilterBanner(filters);
+
   fetch('./graph.json')
     .then(r => r.json())
     .then(graph => {{
-      const simulation = d3.forceSimulation(graph.nodes)
-        .force('link', d3.forceLink(graph.edges)
+      // Apply active filters by hiding non-matching nodes and any edges
+      // that touch a hidden node. The simulation runs on the filtered
+      // subset so the layout reflects what's actually shown.
+      let nodes = graph.nodes;
+      let edges = graph.edges;
+      if (Object.keys(filters).length) {{
+        const visible = new Set();
+        nodes = nodes.filter(n => {{
+          if (nodePassesFilters(n, filters)) {{ visible.add(n.id); return true; }}
+          return false;
+        }});
+        edges = edges.filter(e => {{
+          const sid = (typeof e.source === 'object') ? e.source.id : e.source;
+          const tid = (typeof e.target === 'object') ? e.target.id : e.target;
+          return visible.has(sid) && visible.has(tid);
+        }});
+        // Surface a "no matches" indicator if the intersection is empty.
+        if (!nodes.length) {{
+          document.getElementById('graph-container').innerHTML =
+            '<p class="graph-empty">No nodes match the active filter. '
+            + '<a href="./graph.html">Clear</a> to see the full graph.</p>';
+          return;
+        }}
+      }}
+
+      const simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(edges)
           .id(d => d.id)
           .distance(60)
           .strength(0.4))
@@ -3972,7 +4112,7 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
       const link = g.append('g')
         .attr('class', 'links')
         .selectAll('line')
-        .data(graph.edges)
+        .data(edges)
         .join('line')
         .attr('stroke', '#d0c8b8')
         .attr('stroke-opacity', 0.5)
@@ -3981,7 +4121,7 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
       const node = g.append('g')
         .attr('class', 'nodes')
         .selectAll('circle')
-        .data(graph.nodes)
+        .data(nodes)
         .join('circle')
         .attr('r', d => d.scope === 'daily' ? 5 : d.scope === 'topic' ? 8 : 6)
         .attr('fill', d => SCOPE_COLOR[d.scope] || '#aaa')
@@ -4031,20 +4171,45 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
 }})();
 </script>
 <style>
+/* Unboxed, full-bleed canvas: the SVG container breaks out of the .wrap
+   max-width container so the visualization can span the full viewport,
+   while the header (title, legend, filter banner) stays inside the
+   centered reading column for legibility. The escape trick:
+     left: 50%;  transform: translateX(-50%);  width: 100vw;
+   pulls the element outward from any constrained ancestor without
+   needing to touch .wrap globally. */
 #graph-container {{
-  width: 100%; height: 70vh; min-height: 500px;
-  border: 1px solid var(--rule); border-radius: 4px;
-  background: var(--paper); overflow: hidden;
+  position: relative; left: 50%; transform: translateX(-50%);
+  width: 100vw;
+  height: calc(100vh - 220px); min-height: 540px;
+  background: transparent; overflow: hidden;
+  /* Margin-top syncs with .graph-header's bottom margin so the canvas
+     sits flush below the centered header strip. */
+  margin-top: 4px;
 }}
-#graph-svg {{ width: 100%; height: 100%; }}
-.graph-page {{ max-width: 1100px; margin: 0 auto; padding: 20px 24px; }}
-.graph-header {{ margin-bottom: 12px; }}
+#graph-svg {{ width: 100%; height: 100%; display: block; }}
+.graph-page {{ max-width: none; margin: 0 auto; padding: 12px 16px 0; }}
+.graph-header {{ margin-bottom: 8px; max-width: 1100px; margin-left: auto; margin-right: auto; }}
 .graph-header h2 {{ margin: 0 0 6px; font-size: 22px; font-weight: 500; }}
 .graph-meta {{ margin: 0 0 8px; font-size: 12px; color: var(--muted);
   font-family: ui-monospace, Consolas, monospace; }}
 .graph-hint {{ margin: 6px 0 10px; font-size: 12px; color: var(--muted); font-style: italic; }}
 .graph-legend {{ margin: 0 0 8px; font-size: 12px; color: var(--muted);
   display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; }}
+.graph-filter-banner {{
+  margin: 6px 0 8px; font-size: 12px; color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  padding: 5px 10px; background: var(--paper);
+  border-left: 3px solid var(--accent, #8a4a1f); border-radius: 2px;
+}}
+.gfb-pill {{ margin-right: 12px; color: var(--muted); }}
+.gfb-pill strong {{ color: var(--fg); }}
+.gfb-clear {{ margin-left: 8px; color: var(--muted); text-decoration: underline; }}
+.gfb-clear:hover {{ color: var(--fg); }}
+.graph-empty {{
+  padding: 40px 20px; text-align: center;
+  color: var(--muted); font-style: italic;
+}}
 .gl-dot {{
   display: inline-block; width: 10px; height: 10px; border-radius: 50%;
   margin-right: 3px; vertical-align: middle;
@@ -4266,7 +4431,7 @@ def render_learnings_page(learnings: list[dict], anchor_base: str = "./",
 
             count_str = f"seen {times}×" if times > 1 else "seen once"
             items_html.append(
-                f'<div class="learning-item">'
+                f'<div class="learning-item filterable">'
                 f'  <div class="learning-text">{linked_text}</div>'
                 f'  <div class="learning-footer">'
                 f'    <span class="learning-count">{esc(count_str)}</span>'
@@ -4287,7 +4452,13 @@ def render_learnings_page(learnings: list[dict], anchor_base: str = "./",
         f'<div class="learnings-page">'
         f'  <h2>Learnings</h2>'
         f'  <div class="learnings-meta">{esc(meta)}</div>'
-        f'  {"".join(groups_html)}'
+        f'  <input class="inspect-search learnings-search" type="search" '
+        f'placeholder="filter learnings..." '
+        f'data-target="learnings-content" aria-label="filter learnings">'
+        f'  <div class="inspect-content" id="learnings-content">'
+        f'    {"".join(groups_html)}'
+        f'    <div class="inspect-empty-match" hidden>No matches.</div>'
+        f'  </div>'
         f'</div>'
     )
 

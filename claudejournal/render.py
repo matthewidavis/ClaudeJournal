@@ -586,6 +586,58 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
             return key
         return key
 
+    # Resolve project_id → display_name once so we don't re-query per node.
+    project_display: dict[str, str] = {
+        r["id"]: r["display_name"] for r in conn.execute(
+            "SELECT id, display_name FROM projects"
+        ).fetchall()
+    }
+
+    def _iso_week_for(date_str: str) -> str | None:
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            iy, iw, _ = d.isocalendar()
+            return f"{iy}-W{iw:02d}"
+        except Exception:
+            return None
+
+    def _node_filters(scope: str, key: str) -> dict:
+        """Filter metadata for client-side graph filtering. Each node carries
+        whichever of {project, topic, year, month, week, entity} apply, so
+        the client can match against the chip widget's axis values without
+        re-parsing IDs.
+        """
+        f: dict[str, str | list[str]] = {}
+        if scope == "daily":
+            f["year"] = key[:4]
+            f["month"] = key[:7]
+            w = _iso_week_for(key)
+            if w:
+                f["week"] = w
+        elif scope == "project_day":
+            parts = key.split("|", 1)
+            if len(parts) == 2:
+                pid, date = parts
+                f["project"] = project_display.get(pid, pid)
+                f["year"] = date[:4]
+                f["month"] = date[:7]
+                w = _iso_week_for(date)
+                if w:
+                    f["week"] = w
+        elif scope == "project_arc":
+            f["project"] = project_display.get(key, key)
+        elif scope == "topic":
+            f["topic"] = key
+        elif scope == "weekly":
+            f["week"] = key
+            # Best-effort year extraction from "YYYY-Www"
+            if len(key) >= 4:
+                f["year"] = key[:4]
+        elif scope == "monthly":
+            f["month"] = key
+            f["year"] = key[:4]
+        return f
+
     for lr in link_rows:
         for scope, key in [
             (lr["source_scope"], lr["source_key"]),
@@ -593,12 +645,14 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
         ]:
             nid = _node_id(scope, key)
             if nid not in nodes_map:
-                nodes_map[nid] = {
+                node = {
                     "id": nid,
                     "scope": scope,
                     "label": _node_label(scope, key),
                     "url": _node_url(scope, key),
                 }
+                node.update(_node_filters(scope, key))
+                nodes_map[nid] = node
         edges.append({
             "source": _node_id(lr["source_scope"], lr["source_key"]),
             "target": _node_id(lr["target_scope"], lr["target_key"]),
@@ -828,6 +882,59 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                     _overlap_frac = len(_ann_words & _prose_words) / len(_ann_words)
                     _ann["_contradiction"] = _overlap_frac < 0.5
     stats["annotations"] = sum(len(v) for v in _annotations_by_date.values())
+
+    # ---------- Render-time fallback: ensure every events-day has prose ----------
+    # The pipeline's interlude stage normally fills gaps before render runs,
+    # but rollovers (a fresh day with activity but no pipeline run yet) can
+    # leave a date with events, no narration, AND no interlude — which
+    # surfaces the generic "A short day…" placeholder in the feed.
+    #
+    # We close that hole here: any date with events that has neither a
+    # daily narration nor an interlude triggers an interlude generation
+    # synchronously before _render_feed_pages emits the page. The interlude
+    # module itself decides what form to use (haiku, limerick, etc.) and
+    # persists the row, so subsequent renders skip it. If narrate later
+    # produces a real narration, render_day_entry naturally prefers it
+    # over the interlude — the interlude is non-blocking by design.
+    #
+    # Cost: at most one haiku call per affected day per render. In a
+    # healthy system that's 0–1 calls; the placeholder is genuinely
+    # unreachable in normal operation. A failure in interlude generation
+    # is non-fatal — render falls through to the placeholder text the
+    # same as before.
+    try:
+        from claudejournal.config import load as _load_cfg
+        _cfg = _load_cfg()
+        if getattr(_cfg, "interludes_enabled", True):
+            _gap_dates = [
+                _r["date"] for _r in conn.execute(
+                    """SELECT DISTINCT e.date FROM events e
+                       LEFT JOIN narrations n
+                         ON n.scope='daily' AND n.date = e.date
+                       LEFT JOIN interludes i ON i.date = e.date
+                       WHERE e.date != ''
+                         AND n.prose IS NULL
+                         AND i.prose IS NULL
+                       ORDER BY e.date DESC"""
+                ).fetchall()
+            ]
+            if _gap_dates:
+                _interlude_made = 0
+                for _gd in _gap_dates:
+                    try:
+                        _s = interludemod.run(
+                            _cfg, date=_gd, force=False, verbose=False,
+                        )
+                        _interlude_made += _s.get("generated", 0)
+                    except Exception:
+                        # Generation failure for one date doesn't block render.
+                        pass
+                stats["render_time_interludes"] = _interlude_made
+    except Exception:
+        # Config load or any other unexpected failure: silently fall through.
+        # The placeholder text in render_day_entry is the same fallback the
+        # system used before this hook existed.
+        pass
 
     entries = _render_feed_pages(conn, dates, anchor_base="./", pid=None,
                                  tags_by_date=tags_by_date,

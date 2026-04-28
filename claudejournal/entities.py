@@ -25,17 +25,45 @@ from typing import Generator
 
 # ── Extraction prompt ─────────────────────────────────────────────────────────
 
-ENTITY_EXTRACT_VERSION = "v1"
+ENTITY_EXTRACT_VERSION = "v2"
 
 ENTITY_SYSTEM_PROMPT = """You extract named entities from software engineering journal briefs.
 Return ONLY the JSON object — no prose, no markdown fences."""
 
 ENTITY_EXTRACT_PROMPT = """\
-Given the following journal brief fields, extract ALL named entities that are
-specific proper nouns: people, software libraries/frameworks, AI models, and
-vendor/cloud services. Do NOT include generic terms like "database", "API",
-"server", "code", "script", "function", "feature", "tool" unless they are
-proper names.
+Given the following journal brief fields, extract specific proper-noun entities
+the author worked WITH or ON. Be conservative — when in doubt, omit. Quality
+over quantity.
+
+PRECISE TYPE DEFINITIONS:
+- "person": a named human collaborator (e.g. "Matthew", "Sarah Chen"). NOT
+  the author themselves implied by first-person narration. NOT generic roles.
+- "library": a software library, framework, or specific dev tool with a
+  proper product name (e.g. "React", "FastAPI", "Pillow", "pytest", "D3.js").
+  EXCLUDE programming languages (JavaScript, Python, TypeScript, Go, Rust),
+  EXCLUDE protocols / web standards (WebRTC, HTTP, WebSocket, OAuth),
+  EXCLUDE generic categories ("database", "frontend", "compiler"),
+  EXCLUDE plain nouns that happen to be capitalised mid-sentence.
+- "ai_model": a specific machine-learning model or assistant by its product
+  name (e.g. "Claude", "GPT-4", "Gemini Pro", "Llama 3", "Whisper"). NOT
+  generic terms like "AI", "LLM", "the model", "an assistant". NOT general
+  AI tooling like Claude Code or Cursor (those are services if at all).
+- "service": a hosted product or cloud service that performs work for the
+  user (e.g. "GitHub", "AWS S3", "Vercel", "Cloudflare", "Stripe", "PTZOptics
+  cameras" if that's the vendor product). NOT category nouns like "cloud",
+  "CDN", "the API".
+
+HARD EXCLUSIONS — never extract these regardless of type:
+{project_blocklist_block}- Programming languages of any kind.
+- Web standards, protocols, file formats, encoding schemes.
+- Generic technical nouns ("database", "server", "endpoint", "module",
+  "config", "schema", "pipeline", "dashboard", "agent", "framework").
+- Operating systems unless directly worked on (Linux, Windows, macOS are
+  usually noise — only include if the brief is explicitly about an OS-level
+  task with that OS as the subject).
+- Browser names mentioned only as a target environment (Chrome, Firefox)
+  unless directly worked on.
+- The author's own first name if it appears (briefs are first-person).
 
 Brief content:
 GOAL: {goal}
@@ -45,17 +73,11 @@ FRICTION: {friction}
 WINS: {wins}
 
 Return a JSON object with a single key "entities" containing an array of
-objects with "name" (string) and "type" (one of: "person", "library",
-"ai_model", "service").
+{{"name", "type"}} objects. The "type" must be exactly one of:
+"person", "library", "ai_model", "service".
 
-Examples of valid entities:
-- {{"name": "Claude", "type": "ai_model"}}
-- {{"name": "React", "type": "library"}}
-- {{"name": "Matthew", "type": "person"}}
-- {{"name": "AWS S3", "type": "service"}}
-
-Extract only what is clearly present in the text. Return {{"entities": []}} if
-there are no specific named entities."""
+If no entities are clearly present, return {{"entities": []}}. An empty list
+is a valid answer — do not invent entities to fill the response."""
 
 ENTITY_SCHEMA = {
     "type": "object",
@@ -143,8 +165,34 @@ def _call_extraction(text: str, binary: str = "claude", model: str = "haiku") ->
 
 # ── Core logic ────────────────────────────────────────────────────────────────
 
-def _brief_text(brief: dict) -> str:
-    """Flatten the extractable fields of a brief dict into a single string."""
+def _project_blocklist_block(project_names: list[str]) -> str:
+    """Render the per-call HARD-EXCLUSIONS line listing the user's own
+    project names. Empty string when no projects to exclude.
+
+    Project names are passed as proper-noun forms (e.g. "ChromaKey",
+    "ClaudeJournal"). The model will exclude any case-insensitive match.
+    """
+    if not project_names:
+        return ""
+    # Cap the list at 60 to keep the prompt sane; longer lists get
+    # truncated with an ellipsis.
+    pruned = sorted({p.strip() for p in project_names if p and p.strip()})[:60]
+    if not pruned:
+        return ""
+    listing = ", ".join(f'"{p}"' for p in pruned)
+    return (
+        f"- The author's own project names — these are work artefacts, "
+        f"not entities. Never extract: {listing}.\n"
+    )
+
+
+def _brief_text(brief: dict, project_names: list[str] | None = None) -> str:
+    """Flatten the extractable fields of a brief dict into the prompt body.
+
+    `project_names` is a list of the user's own project display names; they
+    are inserted into the HARD EXCLUSIONS section so the extractor doesn't
+    classify the author's own work as third-party libraries or AI models.
+    """
     def _fmt_list(items) -> str:
         if not items:
             return ""
@@ -158,6 +206,7 @@ def _brief_text(brief: dict) -> str:
     friction = _fmt_list(brief.get("friction"))
     wins = _fmt_list(brief.get("wins"))
     return ENTITY_EXTRACT_PROMPT.format(
+        project_blocklist_block=_project_blocklist_block(project_names or []),
         goal=goal or "(none)",
         did=did or "(none)",
         learned=learned or "(none)",
@@ -192,10 +241,29 @@ def _upsert_entity(conn: sqlite3.Connection, name: str, etype: str, date: str) -
     return eid
 
 
+# Hardcoded post-filter: programming languages, web standards, and generic
+# nouns that v1 frequently mis-classified. The prompt now excludes these
+# explicitly, but we double-filter to be robust against model drift.
+_LANGUAGE_AND_STANDARD_NAMES = frozenset(s.lower() for s in [
+    "javascript", "typescript", "python", "go", "rust", "java", "c++",
+    "c#", "ruby", "php", "swift", "kotlin", "scala", "elixir", "dart",
+    "html", "css", "sql", "bash", "shell", "powershell",
+    "webrtc", "websocket", "websockets", "http", "https", "tcp", "udp",
+    "rest", "graphql", "grpc", "json", "xml", "yaml", "toml", "csv",
+    "oauth", "saml", "jwt",
+])
+
+
 def extract_entities(brief_json: str, session_id: str, date: str, *,
+                     project_names: list[str] | None = None,
                      binary: str = "claude", model: str = "haiku",
                      verbose: bool = False) -> list[dict]:
     """Extract entities from one brief JSON string.
+
+    `project_names`: list of the user's own project display names; passed
+    to the prompt as a hard exclusion list AND used as a post-filter so
+    even if the model ignores the prompt, the user's project names never
+    end up classified as libraries or AI models.
 
     Returns list of {name, type} dicts (raw, before persistence).
     """
@@ -204,7 +272,7 @@ def extract_entities(brief_json: str, session_id: str, date: str, *,
     except json.JSONDecodeError:
         return []
 
-    text = _brief_text(brief)
+    text = _brief_text(brief, project_names=project_names or [])
     try:
         entities = _call_extraction(text, binary=binary, model=model)
     except Exception as exc:
@@ -212,10 +280,31 @@ def extract_entities(brief_json: str, session_id: str, date: str, *,
             print(f"  ! entity extraction failed for {session_id}/{date}: {exc}")
         return []
 
-    # Filter to valid types only
     valid_types = {"person", "library", "ai_model", "service"}
-    return [e for e in entities
-            if isinstance(e, dict) and e.get("name") and e.get("type") in valid_types]
+    project_lc = {p.strip().lower() for p in (project_names or []) if p}
+
+    out = []
+    for e in entities:
+        if not isinstance(e, dict):
+            continue
+        name = e.get("name")
+        etype = e.get("type")
+        if not name or etype not in valid_types:
+            continue
+        nlc = name.strip().lower()
+        # Drop the user's own project names regardless of how the model
+        # classified them.
+        if nlc in project_lc:
+            if verbose:
+                print(f"    skip {name!r}: matches user project")
+            continue
+        # Drop hardcoded languages/standards.
+        if nlc in _LANGUAGE_AND_STANDARD_NAMES:
+            if verbose:
+                print(f"    skip {name!r}: language/standard")
+            continue
+        out.append(e)
+    return out
 
 
 def run(cfg,
@@ -248,6 +337,17 @@ def run(cfg,
     stats = {"processed": 0, "skipped": 0, "entities_added": 0, "errors": 0}
 
     try:
+        # Load the user's own project display names once; they're the
+        # single biggest source of v1 misclassifications (e.g. ChromaKey
+        # extracted as an AI model). Passed to every brief-level
+        # extraction call so the model excludes them, and used as a
+        # post-filter for safety.
+        project_names = [
+            r["display_name"] for r in conn.execute(
+                "SELECT display_name FROM projects WHERE display_name IS NOT NULL"
+            ).fetchall()
+        ]
+
         # Fetch all (session_id, date, brief_json) rows
         rows = conn.execute(
             "SELECT session_id, date, brief_json, project_id "
@@ -294,6 +394,7 @@ def run(cfg,
 
             entities = extract_entities(
                 brief_json, session_id, date,
+                project_names=project_names,
                 binary=binary, model=model, verbose=verbose,
             )
 
