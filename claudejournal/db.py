@@ -190,6 +190,16 @@ CREATE TABLE IF NOT EXISTS annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_annotations_target
     ON annotations(target_scope, target_key);
+
+-- meta: generic key/value store for render-time caches and similar.
+-- Currently used by:
+--   * 'links_input_hash' — digest covering inputs to _rebuild_links() so
+--     subsequent renders can skip the truncate+re-extract pass when the
+--     narration corpus hasn't changed.
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 

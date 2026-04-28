@@ -15,6 +15,7 @@ Layout:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime
@@ -457,19 +458,104 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     return out
 
 
+_LINKS_HASH_KEY = "links_input_hash"
+
+
+def _compute_links_input_hash(conn: sqlite3.Connection,
+                              known_docs: list[tuple[str, str]],
+                              known_topics: list[tuple[str, str]]) -> str:
+    """Stable digest covering everything _rebuild_links() depends on.
+
+    Inputs:
+      * every narration row's (scope, key, input_hash) — we use the
+        existing per-narration content hash rather than re-hashing prose,
+        so this is O(rows) lookups not O(prose-bytes)
+      * the docs list (id + title pairs) since linkifier behaviour
+        depends on it
+      * the topics list (tag slug + display) for the same reason
+
+    Returns a hex string. Equal hash → no link-graph change since last
+    render → safe to skip the rebuild.
+    """
+    h = hashlib.sha256()
+    rows = conn.execute(
+        "SELECT scope, key, input_hash FROM narrations "
+        "WHERE prose IS NOT NULL AND prose != '' "
+        "ORDER BY scope, key"
+    ).fetchall()
+    for r in rows:
+        h.update(b"\x01")
+        h.update((r["scope"] or "").encode("utf-8"))
+        h.update(b"\x02")
+        h.update((r["key"] or "").encode("utf-8"))
+        h.update(b"\x03")
+        h.update((r["input_hash"] or "").encode("utf-8"))
+    h.update(b"\x04docs\x04")
+    for doc_id, title in sorted(known_docs):
+        h.update((doc_id or "").encode("utf-8"))
+        h.update(b"|")
+        h.update((title or "").encode("utf-8"))
+        h.update(b"\x05")
+    h.update(b"\x06topics\x06")
+    for slug, label in sorted(known_topics):
+        h.update((slug or "").encode("utf-8"))
+        h.update(b"|")
+        h.update((label or "").encode("utf-8"))
+        h.update(b"\x07")
+    return h.hexdigest()[:32]
+
+
+def _read_meta(conn: sqlite3.Connection, key: str) -> str | None:
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
+    except sqlite3.OperationalError:
+        # meta table may not exist on older DBs — caller treats as cache miss
+        return None
+
+
+def _write_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    try:
+        conn.execute(
+            """INSERT INTO meta (key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value=excluded.value""",
+            (key, value),
+        )
+    except sqlite3.OperationalError:
+        # meta table missing — silently skip; the rebuild itself still ran
+        pass
+
+
 def _rebuild_links(conn: sqlite3.Connection,
                    known_docs: list[tuple[str, str]],
                    known_topics: list[tuple[str, str]]) -> int:
     """Rebuild the materialized `links` table from all narration prose.
 
-    Called once per render_site() invocation.  The table is truncated first
-    so the result is always a clean snapshot matching the current site content.
+    Called once per render_site() invocation. Skips the rebuild when the
+    cached input hash matches — narration content + the docs/topics
+    lists are the only things that affect link extraction, so an unchanged
+    hash means the existing table is still authoritative.
 
-    Iterates every narration row, extracts link pairs from prose using the
-    same logic that the HTML linkifiers use, and batch-inserts them.
-
-    Returns the total number of link rows written.
+    On hash mismatch (or first run / table missing), the table is
+    truncated and re-populated from a fresh extraction pass over every
+    narration row. Returns the number of link rows currently in the table
+    (whether freshly written or kept from the cached run).
     """
+    fresh_hash = _compute_links_input_hash(conn, known_docs, known_topics)
+    cached_hash = _read_meta(conn, _LINKS_HASH_KEY)
+
+    if cached_hash == fresh_hash:
+        # Inputs unchanged — keep the existing table. Cheap path: just
+        # report the row count so callers/stats get an accurate number.
+        try:
+            row = conn.execute("SELECT COUNT(*) AS n FROM links").fetchone()
+            return int(row["n"]) if row else 0
+        except sqlite3.OperationalError:
+            # links table missing — fall through to full rebuild
+            pass
+
     conn.execute("DELETE FROM links")
     rows_written = 0
     # Fetch all narration rows that have prose
@@ -505,6 +591,7 @@ def _rebuild_links(conn: sqlite3.Connection,
         )
         rows_written = len(inserts)
 
+    _write_meta(conn, _LINKS_HASH_KEY, fresh_hash)
     conn.commit()
     return rows_written
 
