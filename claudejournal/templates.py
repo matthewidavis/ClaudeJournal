@@ -1488,7 +1488,7 @@ FILTER_WIDGET = """
     a.addEventListener('click', e => { e.preventDefault(); onClick(); });
     return a;
   }
-  const AXIS_LABELS = {project: 'Project', topic: 'Topic', year: 'Year', month: 'Month', week: 'Week', mood: 'Mood', learning: 'Aha moment', entity: 'Entity', search: 'Find'};
+  const AXIS_LABELS = {project: 'Project', topic: 'Topic', year: 'Year', month: 'Month', week: 'Week', mood: 'Mood', learning: 'Aha moment', entity: 'Tools', search: 'Find'};
   // Entry-type filter. 'all' shows everything; the others hide the two
   // element kinds that don't match (dailies are <article.entry>, weeklies
   // live in .week-rollup-wrap, monthlies in .month-rollup-wrap).
@@ -1585,7 +1585,14 @@ FILTER_WIDGET = """
       navTargets.forEach(([label, key, href]) => {
         const isActive = currentPath.endsWith('/' + href);
         navRow.appendChild(makeChip(label, 'mode mode-' + key + (isActive ? ' active' : ''), () => {
-          window.location.href = anchorBaseN + href;
+          // Toggle semantics: clicking the active nav chip on its own
+          // destination page navigates back to the main feed, so users
+          // can deselect it the same way they would any filter chip.
+          if (isActive) {
+            window.location.href = anchorBaseN + 'index.html';
+          } else {
+            window.location.href = anchorBaseN + href;
+          }
         }));
       });
     }
@@ -3145,7 +3152,7 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                 f'</div>'
             )
         n_ents = len(entities)
-        _add("entities", f"{n_ents} entit{'y' if n_ents == 1 else 'ies'}",
+        _add("entities", f"{n_ents} tool{'' if n_ents == 1 else 's'}",
              "".join(parts))
 
     # --- updated (narration + brief generation timestamps) ---
@@ -4030,13 +4037,23 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
     return true;
   }}
 
+  // Display labels for filter axes — 'entity' surfaces as 'Tools' to match
+  // the chip-widget label, others get title-cased.
+  const _AXIS_DISPLAY = {{
+    project: 'Project', topic: 'Topic', year: 'Year', month: 'Month',
+    week: 'Week', entity: 'Tools',
+  }};
+
   function buildFilterBanner(filters) {{
     const banner = document.getElementById('graph-filter-banner');
     if (!banner) return;
     const keys = Object.keys(filters);
     if (!keys.length) {{ banner.setAttribute('hidden', ''); return; }}
-    const parts = keys.map(k => '<span class="gfb-pill">' + k + ': <strong>'
-      + filters[k] + '</strong></span>');
+    const parts = keys.map(k => {{
+      const label = _AXIS_DISPLAY[k] || (k.charAt(0).toUpperCase() + k.slice(1));
+      return '<span class="gfb-pill">' + label + ': <strong>'
+        + filters[k] + '</strong></span>';
+    }});
     banner.innerHTML = 'Filtered: ' + parts.join(' ')
       + ' <a class="gfb-clear" href="./graph.html">clear filter</a>';
     banner.removeAttribute('hidden');
@@ -4044,7 +4061,11 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
 
   const container = document.getElementById('graph-container');
   const svg = d3.select('#graph-svg');
-  const width = container.clientWidth || 900;
+  // Use viewport dimensions directly. clientWidth on the container can
+  // disagree with the actual rendered width when the container is
+  // breaking out of a constrained ancestor via translateX, and the
+  // forceCenter math has to match what the SVG is *visually* showing.
+  const width = window.innerWidth || container.clientWidth || 900;
   const height = Math.max(container.clientHeight || 600, 600);
   svg.attr('width', width).attr('height', height);
 
@@ -4177,18 +4198,29 @@ def render_graph_page(node_count: int = 0, edge_count: int = 0) -> str:
    centered reading column for legibility. The escape trick:
      left: 50%;  transform: translateX(-50%);  width: 100vw;
    pulls the element outward from any constrained ancestor without
-   needing to touch .wrap globally. */
+   needing to touch .wrap globally.
+
+   .graph-page also cancels the .wrap container's bottom padding so the
+   canvas can reach the viewport bottom without a strip of empty space
+   below it. negative bottom margin pulls the next sibling (footer)
+   up to compensate. */
 #graph-container {{
   position: relative; left: 50%; transform: translateX(-50%);
   width: 100vw;
   height: calc(100vh - 220px); min-height: 540px;
   background: transparent; overflow: hidden;
-  /* Margin-top syncs with .graph-header's bottom margin so the canvas
-     sits flush below the centered header strip. */
   margin-top: 4px;
+  margin-bottom: 0;
 }}
 #graph-svg {{ width: 100%; height: 100%; display: block; }}
-.graph-page {{ max-width: none; margin: 0 auto; padding: 12px 16px 0; }}
+.graph-page {{
+  max-width: none; margin: 0 auto;
+  padding: 12px 16px 0;
+  /* Cancel the .wrap container's padding-bottom (120px) on this page
+     only, so empty space below the canvas doesn't look like a layout
+     mistake. */
+  margin-bottom: -120px;
+}}
 .graph-header {{ margin-bottom: 8px; max-width: 1100px; margin-left: auto; margin-right: auto; }}
 .graph-header h2 {{ margin: 0 0 6px; font-size: 22px; font-weight: 500; }}
 .graph-meta {{ margin: 0 0 8px; font-size: 12px; color: var(--muted);
