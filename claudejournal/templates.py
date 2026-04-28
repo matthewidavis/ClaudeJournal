@@ -3580,9 +3580,11 @@ def render_day_entry(date: str, narration: str, mood: str,
 
 def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./",
                       known_docs: list[tuple[str, str]] | None = None,
-                      known_topics: list[tuple[str, str]] | None = None) -> str:
+                      known_topics: list[tuple[str, str]] | None = None,
+                      annotations: list[dict] | None = None) -> str:
     known_docs = known_docs or []
     known_topics = known_topics or []
+    ann_html = _render_annotation_block(annotations or [])
     if rollup_prose:
         paragraphs = "".join(
             f"<p>{link_topic_titles(link_doc_titles(link_anchors(p.strip(), base_path=anchor_base), known_docs, base_path=anchor_base), known_topics, base_path=anchor_base)}</p>"
@@ -3595,8 +3597,8 @@ def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./",
         f'<div class="week-break" data-week="{esc(iso_week)}">'
         f'  — Week {esc(iso_week)} —'
         f'</div>'
-        f'<div class="week-rollup-wrap" data-week="{esc(iso_week)}">{rollup_html}</div>'
-        if rollup_html else
+        f'<div class="week-rollup-wrap" data-week="{esc(iso_week)}">{rollup_html}{ann_html}</div>'
+        if rollup_html or ann_html else
         f'<div class="week-break" data-week="{esc(iso_week)}">'
         f'  — Week {esc(iso_week)} —'
         f'</div>'
@@ -3605,10 +3607,12 @@ def render_week_break(iso_week: str, rollup_prose: str, anchor_base: str = "./",
 
 def render_month_break(year_month: str, rollup_prose: str, anchor_base: str = "./",
                        known_docs: list[tuple[str, str]] | None = None,
-                       known_topics: list[tuple[str, str]] | None = None) -> str:
+                       known_topics: list[tuple[str, str]] | None = None,
+                       annotations: list[dict] | None = None) -> str:
     """Month divider + attached monthly retrospective, mirrors render_week_break."""
     known_docs = known_docs or []
     known_topics = known_topics or []
+    ann_html = _render_annotation_block(annotations or [])
     try:
         pretty = datetime.strptime(year_month, "%Y-%m").strftime("%B %Y")
     except ValueError:
@@ -3623,7 +3627,14 @@ def render_month_break(year_month: str, rollup_prose: str, anchor_base: str = ".
             f'<div class="month-break" data-month="{esc(year_month)}">'
             f'  ― {esc(pretty)} ―'
             f'</div>'
-            f'<div class="month-rollup-wrap" data-month="{esc(year_month)}">{rollup_html}</div>'
+            f'<div class="month-rollup-wrap" data-month="{esc(year_month)}">{rollup_html}{ann_html}</div>'
+        )
+    if ann_html:
+        return (
+            f'<div class="month-break" data-month="{esc(year_month)}">'
+            f'  ― {esc(pretty)} ―'
+            f'</div>'
+            f'<div class="month-rollup-wrap" data-month="{esc(year_month)}">{ann_html}</div>'
         )
     return (
         f'<div class="month-break" data-month="{esc(year_month)}">'
@@ -3796,7 +3807,8 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
                       topic_slugs: dict[str, str] | None = None,
                       slug: str = "",
                       generated_at: str = "",
-                      backlinks: list[dict] | None = None) -> str:
+                      backlinks: list[dict] | None = None,
+                      annotations: list[dict] | None = None) -> str:
     """Standalone topic wiki page. `prose` is human-readable narration.
 
     anchor_base: path from the topic page to the site root (default '../').
@@ -3804,6 +3816,7 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
     projects: list of project display names involved with this tag.
     known_docs: (title, doc_id) pairs for doc linkification.
     topic_slugs: {tag: slug} mapping for topic linkification.
+    annotations: user-authored annotations for this topic (Phase E v2).
     """
     from claudejournal.post_process import link_anchors, link_doc_titles
 
@@ -3866,6 +3879,8 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
     # "Referenced from" backlinks section
     backlinks_html = _render_backlinks_section(backlinks or [])
 
+    ann_html = _render_annotation_block(annotations or [])
+
     return (
         f'<article class="topic-page">'
         f'  <div class="topic-tag-label">topic</div>'
@@ -3873,6 +3888,7 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
         f'  {meta_html}'
         f'  {audio_html}'
         f'  <div class="topic-body">{paragraphs_html}</div>'
+        f'  {ann_html}'
         f'  {backlinks_html}'
         f'  <div class="topic-footer">{view_link}</div>'
         f'</article>'
@@ -3887,7 +3903,8 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
                     known_docs: list[tuple[str, str]] | None = None,
                     topic_slugs: dict[str, str] | None = None,
                     generated_at: str = "",
-                    backlinks: list[dict] | None = None) -> str:
+                    backlinks: list[dict] | None = None,
+                    annotations: list[dict] | None = None) -> str:
     """Standalone project arc retrospective page.
 
     anchor_base: path from the arc page (out/projects/<name>/index.html)
@@ -3941,12 +3958,15 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
 
     backlinks_html = _render_backlinks_section(backlinks or [])
 
+    ann_html = _render_annotation_block(annotations or [])
+
     return (
         f'<article class="arc-page">'
         f'  <div class="arc-tag-label">project arc</div>'
         f'  <h2>{esc(project_name)}</h2>'
         f'  {meta_html}'
         f'  <div class="arc-body">{paragraphs_html}</div>'
+        f'  {ann_html}'
         f'  {backlinks_html}'
         f'  <div class="arc-footer">{view_link}</div>'
         f'</article>'

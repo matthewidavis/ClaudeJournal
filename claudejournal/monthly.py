@@ -14,10 +14,16 @@ from datetime import datetime
 
 from claudejournal.config import Config
 from claudejournal.db import connect
+from claudejournal.narrate import (
+    _annotations_hash_contribution,
+    format_pinned_corrections,
+    load_annotations_for_scope,
+)
 
 # Bumping this invalidates every monthly rollup on next run. Keep in sync
 # with the MONTHLY_SYSTEM prompt below when its semantics change.
-MONTHLY_PROMPT_VERSION = "v1"
+# v2: annotation prompt-pins added (Phase E v2).
+MONTHLY_PROMPT_VERSION = "v2"
 
 
 MONTHLY_SYSTEM = """You are the user's journal, producing a short monthly retrospective in their first-person voice, built on top of the weekly rollups and daily entries from that month.
@@ -78,11 +84,15 @@ def _load_daily_dates(conn: sqlite3.Connection, year_month: str) -> list[str]:
     return [r["date"] for r in rows]
 
 
-def _monthly_input_hash(weeklies: list[dict], anchor_dates: list[str]) -> str:
-    """Stable hash over the weekly rollups + daily anchor dates feeding
-    this month. Weekly input_hash cascades up from daily/brief changes;
-    anchor dates ensure a newly-present day still invalidates even if no
-    weekly has been regenerated yet."""
+def _monthly_input_hash(weeklies: list[dict], anchor_dates: list[str],
+                        annotations: list[dict] | None = None) -> str:
+    """Stable hash over weekly rollups + daily anchor dates + annotations.
+
+    Weekly input_hash cascades up from daily/brief changes; anchor dates ensure
+    a newly-present day still invalidates even if no weekly has been regenerated
+    yet. When annotations change (user edits a correction for this month), the
+    hash also changes, triggering re-narration with the updated PINNED CORRECTIONS.
+    """
     h = hashlib.sha256()
     h.update(MONTHLY_PROMPT_VERSION.encode())
     for w in sorted(weeklies, key=lambda x: x["iso_week"]):
@@ -95,11 +105,21 @@ def _monthly_input_hash(weeklies: list[dict], anchor_dates: list[str]) -> str:
     for d in sorted(anchor_dates):
         h.update(d.encode())
         h.update(b"\x03")
+    if annotations:
+        h.update(b"\x03annotations\x03")
+        h.update(_annotations_hash_contribution(annotations))
     return h.hexdigest()[:16]
 
 
 def _build_monthly_message(year_month: str, weeklies: list[dict],
-                            anchor_dates: list[str]) -> str:
+                            anchor_dates: list[str],
+                            annotations: list[dict] | None = None) -> str:
+    """Build the user message for the monthly rollup prompt.
+
+    annotations: list of annotation rows for this year_month
+    (scope='monthly', key=year_month). If non-empty, a PINNED CORRECTIONS block
+    is inserted after the source material and before the final instruction.
+    """
     start, end = _month_bounds(year_month)
     lines = [f"MONTH: {year_month}  ({start} → {end})", ""]
     lines.append(f"WEEKLY ROLLUPS ({len(weeklies)}):")
@@ -113,6 +133,12 @@ def _build_monthly_message(year_month: str, weeklies: list[dict],
         for chunk in chunks:
             lines.append("  " + "  ".join(f"[{d}]" for d in chunk))
     lines.append("")
+
+    # PINNED CORRECTIONS — user annotations for this month (Phase E v2).
+    # Placed after source material, before the final instruction.
+    if annotations:
+        lines.append(format_pinned_corrections(annotations))
+
     lines.append("Write the monthly retrospective now.")
     return "\n".join(lines)
 
@@ -124,7 +150,12 @@ def narrate_month(conn: sqlite3.Connection, year_month: str, *,
     anchor_dates = _load_daily_dates(conn, year_month)
     if not weeklies and not anchor_dates:
         return None
-    month_hash = _monthly_input_hash(weeklies, anchor_dates)
+
+    # Phase E v2: load monthly-scoped annotations so they participate in the hash
+    # and are injected into the prompt as PINNED CORRECTIONS.
+    annotations = load_annotations_for_scope(conn, "monthly", year_month)
+
+    month_hash = _monthly_input_hash(weeklies, anchor_dates, annotations)
 
     if not force:
         row = conn.execute(
@@ -134,7 +165,7 @@ def narrate_month(conn: sqlite3.Connection, year_month: str, *,
         if row and row["prompt_version"] == MONTHLY_PROMPT_VERSION and row["input_hash"] == month_hash:
             return {"year_month": year_month, "skipped": True}
 
-    user_msg = _build_monthly_message(year_month, weeklies, anchor_dates)
+    user_msg = _build_monthly_message(year_month, weeklies, anchor_dates, annotations)
 
     cmd = [
         binary, "-p",

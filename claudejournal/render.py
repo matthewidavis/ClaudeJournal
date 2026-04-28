@@ -970,6 +970,62 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                     _ann["_contradiction"] = _overlap_frac < 0.5
     stats["annotations"] = sum(len(v) for v in _annotations_by_date.values())
 
+    # ---------- Phase E v2: annotations for topic/arc/weekly/monthly scopes ----------
+    # Load annotations for all non-daily scopes, apply the same contradiction guard,
+    # and store in per-scope dicts for injection into the respective page renderers.
+    _annotations_by_topic: dict[str, list[dict]] = {}
+    _annotations_by_arc: dict[str, list[dict]] = {}
+    _annotations_by_week: dict[str, list[dict]] = {}
+    _annotations_by_month: dict[str, list[dict]] = {}
+    try:
+        _scope_ann_rows = conn.execute(
+            """SELECT id, target_scope, target_key, annotation_type, text,
+                      created_at, updated_at, pin_priority, scope_tag
+               FROM annotations
+               WHERE target_scope IN ('topic', 'project_arc', 'weekly', 'monthly')
+               ORDER BY pin_priority DESC, id ASC"""
+        ).fetchall()
+        _scope_buckets = {
+            "topic": _annotations_by_topic,
+            "project_arc": _annotations_by_arc,
+            "weekly": _annotations_by_week,
+            "monthly": _annotations_by_month,
+        }
+        for _r in _scope_ann_rows:
+            _ann = dict(_r)
+            _ann["_contradiction"] = False
+            _scope_buckets[_r["target_scope"]].setdefault(_r["target_key"], []).append(_ann)
+    except Exception:
+        pass  # annotations table may not exist yet on old DBs
+
+    # Contradiction guard for non-daily scopes: same word-overlap heuristic.
+    # scope -> (narration_scope, dict_to_check)
+    _scope_guard_map = [
+        ("topic", "topic", _annotations_by_topic),
+        ("project_arc", "project_arc", _annotations_by_arc),
+        ("weekly", "weekly", _annotations_by_week),
+        ("monthly", "monthly", _annotations_by_month),
+    ]
+    for _scope_label, _narr_scope, _ann_dict in _scope_guard_map:
+        for _key, _ann_list in _ann_dict.items():
+            _narr_row = conn.execute(
+                "SELECT prose FROM narrations WHERE scope=? AND key=?",
+                (_narr_scope, _key),
+            ).fetchone()
+            _narr_prose = (_narr_row["prose"] if _narr_row else "") or ""
+            _prose_words = _sig_words(_narr_prose)
+            for _ann in _ann_list:
+                if _ann.get("annotation_type") == "correction" and _narr_prose:
+                    _ann_words = _sig_words(_ann.get("text", ""))
+                    if _ann_words:
+                        _overlap_frac = len(_ann_words & _prose_words) / len(_ann_words)
+                        _ann["_contradiction"] = _overlap_frac < 0.5
+    stats["annotations"] += sum(
+        sum(len(v) for v in d.values())
+        for d in (_annotations_by_topic, _annotations_by_arc,
+                  _annotations_by_week, _annotations_by_month)
+    )
+
     # ---------- Render-time fallback: ensure every events-day has prose ----------
     # The pipeline's interlude stage normally fills gaps before render runs,
     # but rollovers (a fresh day with activity but no pipeline run yet) can
@@ -1121,6 +1177,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                 topic_slugs=_slug_map_global,
                 generated_at=arc_row["generated_at"] or "",
                 backlinks=arc_backlinks,
+                annotations=_annotations_by_arc.get(pid, []),
             )
             header = render_site_header(
                 site_title="ClaudeJournal",
@@ -1152,7 +1209,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         iso_week, start, prose = wr["key"], wr["date"], wr["prose"]
         body_html = render_week_break(iso_week, prose, anchor_base="../",
                                       known_docs=known_docs_all,
-                                      known_topics=known_topics_all)
+                                      known_topics=known_topics_all,
+                                      annotations=_annotations_by_week.get(iso_week, []))
         # Full site header — chip bar is the navigation, no back-crumb.
         header = render_site_header(
             site_title="ClaudeJournal",
@@ -1177,7 +1235,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             pretty = ym
         body_html = render_month_break(ym, prose, anchor_base="../",
                                        known_docs=known_docs_all,
-                                       known_topics=known_topics_all)
+                                       known_topics=known_topics_all,
+                                       annotations=_annotations_by_month.get(ym, []))
         header = render_site_header(
             site_title="ClaudeJournal",
             subtitle=f"{pretty} · starts {start}",
@@ -1292,6 +1351,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
             slug=slug,
             generated_at=gen_at,
             backlinks=topic_backlinks,
+            annotations=_annotations_by_topic.get(tag, []),
         )
         pretty_tag = tag.replace("-", " ").title()
         header = render_site_header(

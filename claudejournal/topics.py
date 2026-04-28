@@ -22,11 +22,17 @@ from datetime import datetime, timezone
 
 from claudejournal.config import Config
 from claudejournal.db import connect
+from claudejournal.narrate import (
+    _annotations_hash_contribution,
+    format_pinned_corrections,
+    load_annotations_for_scope,
+)
 
 
 # Bump when the topic prompt meaningfully changes — participates in the input
 # hash so bumping forces regeneration of all topic pages cleanly.
-TOPIC_PROMPT_VERSION = "v1"
+# v2: annotation prompt-pins added (Phase E v2).
+TOPIC_PROMPT_VERSION = "v2"
 
 
 TOPIC_SYSTEM = """You produce a personal, first-person-reflective wiki page — what the user has come to understand about this topic through their own work. Not a glossary entry; not a news article. Write as if the user is synthesizing their own notes.
@@ -156,11 +162,14 @@ def _load_briefs_for_tag(conn: sqlite3.Connection, tag: str) -> list[dict]:
     return results
 
 
-def _topic_input_hash(tag: str, briefs: list[dict]) -> str:
-    """Deterministic hash over prompt version + tag + brief identifiers.
+def _topic_input_hash(tag: str, briefs: list[dict],
+                      annotations: list[dict] | None = None) -> str:
+    """Deterministic hash over prompt version + tag + brief identifiers + annotations.
 
     When briefs change (new sessions, updated briefs) the hash changes and
-    the topic page regenerates on the next cycle.
+    the topic page regenerates on the next cycle. When annotations change
+    (user edits a correction for this topic), the hash also changes, triggering
+    re-narration with the updated PINNED CORRECTIONS block.
     """
     h = hashlib.sha256()
     h.update(TOPIC_PROMPT_VERSION.encode())
@@ -173,6 +182,9 @@ def _topic_input_hash(tag: str, briefs: list[dict]) -> str:
         # Include the brief's own hash if available, otherwise the goal
         goal = (b.get("goal") or "").encode("utf-8", errors="replace")
         h.update(sid); h.update(b"\x01"); h.update(goal); h.update(b"\x02")
+    if annotations:
+        h.update(b"\x03annotations\x03")
+        h.update(_annotations_hash_contribution(annotations))
     return h.hexdigest()[:16]
 
 
@@ -187,8 +199,15 @@ def _already_current(conn: sqlite3.Connection, tag: str, input_hash: str) -> boo
     return row["input_hash"] == input_hash and row["prompt_version"] == TOPIC_PROMPT_VERSION
 
 
-def _build_topic_message(tag: str, briefs: list[dict], max_chars: int = 14000) -> str:
-    """Build the user message for the topic synthesis prompt."""
+def _build_topic_message(tag: str, briefs: list[dict],
+                         annotations: list[dict] | None = None,
+                         max_chars: int = 14000) -> str:
+    """Build the user message for the topic synthesis prompt.
+
+    annotations: list of annotation rows for this topic (scope='topic', key=tag).
+    If non-empty, a PINNED CORRECTIONS block is inserted after the source
+    material and before the final instruction line.
+    """
     lines = [f"TOPIC TAG: {tag}", ""]
 
     # Group briefs by date for context
@@ -222,6 +241,12 @@ def _build_topic_message(tag: str, briefs: list[dict], max_chars: int = 14000) -
 
     lines.append(body)
     lines.append("")
+
+    # PINNED CORRECTIONS — user annotations for this topic (Phase E v2).
+    # Placed after source material, before the final instruction.
+    if annotations:
+        lines.append(format_pinned_corrections(annotations))
+
     lines.append(
         "Write a first-person synthesis of what the user has learned and experienced with this topic. "
         "Plain paragraphs only — no headers, no bullets, no markdown. 250–500 words."
@@ -312,14 +337,18 @@ def summarize_topic(conn: sqlite3.Connection, tag: str, *,
             print(f"  skip {tag!r}  (no briefs with this tag)")
         return {"generated": 0, "skipped": 1, "reason": "no briefs"}
 
-    ih = _topic_input_hash(tag, briefs)
+    # Phase E v2: load topic-scoped annotations so they participate in the hash
+    # and are injected into the prompt as PINNED CORRECTIONS.
+    annotations = load_annotations_for_scope(conn, "topic", tag)
+
+    ih = _topic_input_hash(tag, briefs, annotations)
 
     if not force and _already_current(conn, tag, ih):
         if verbose:
             print(f"  skip {tag!r}  (cache hit)")
         return {"generated": 0, "skipped": 1, "reason": "cache"}
 
-    user_msg = _build_topic_message(tag, briefs)
+    user_msg = _build_topic_message(tag, briefs, annotations)
     prose = _call_claude_prose(user_msg, TOPIC_SYSTEM, model=model)
 
     _persist_topic(conn, tag, prose, ih, model)
@@ -338,7 +367,8 @@ def list_topics(conn: sqlite3.Connection, min_days: int = 3) -> list[dict]:
     results = []
     for tag in qualifying:
         briefs = _load_briefs_for_tag(conn, tag)
-        ih = _topic_input_hash(tag, briefs)
+        annotations = load_annotations_for_scope(conn, "topic", tag)
+        ih = _topic_input_hash(tag, briefs, annotations)
         row = conn.execute(
             "SELECT input_hash, prompt_version, generated_at FROM narrations "
             "WHERE scope='topic' AND key=?",

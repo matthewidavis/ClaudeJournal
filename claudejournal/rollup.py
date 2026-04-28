@@ -13,10 +13,16 @@ from datetime import date as date_cls, datetime, timedelta
 
 from claudejournal.config import Config
 from claudejournal.db import connect
+from claudejournal.narrate import (
+    _annotations_hash_contribution,
+    format_pinned_corrections,
+    load_annotations_for_scope,
+)
 
 # Bumping this invalidates every weekly rollup on next run. Keep in sync
 # with the ROLLUP_SYSTEM prompt below when its semantics change.
-ROLLUP_PROMPT_VERSION = "v1"
+# v2: annotation prompt-pins added (Phase E v2).
+ROLLUP_PROMPT_VERSION = "v2"
 
 
 ROLLUP_SYSTEM = """You are the user's journal, producing a short weekly retrospective in their first-person voice, built on top of their daily diary entries from the past week.
@@ -62,10 +68,15 @@ def _load_daily_for_week(conn: sqlite3.Connection, iso_week: str) -> list[dict]:
              "input_hash": r["input_hash"] or ""} for r in rows]
 
 
-def _weekly_input_hash(dailies: list[dict]) -> str:
-    """Stable hash over the daily narrations feeding this week.
+def _weekly_input_hash(dailies: list[dict],
+                       annotations: list[dict] | None = None) -> str:
+    """Stable hash over the daily narrations + annotations feeding this week.
+
     Prefer the daily's input_hash (cascades from brief-level changes); fall
-    back to len(prose) for older rows that predate the hash column."""
+    back to len(prose) for older rows that predate the hash column. When
+    annotations change (user edits a correction for this week), the hash also
+    changes, triggering re-narration with the updated PINNED CORRECTIONS block.
+    """
     h = hashlib.sha256()
     h.update(ROLLUP_PROMPT_VERSION.encode())
     for d in sorted(dailies, key=lambda x: x["date"]):
@@ -74,10 +85,20 @@ def _weekly_input_hash(dailies: list[dict]) -> str:
         token = d.get("input_hash") or f"len:{len(d.get('prose') or '')}"
         h.update(token.encode("utf-8", errors="replace"))
         h.update(b"\x01")
+    if annotations:
+        h.update(b"\x03annotations\x03")
+        h.update(_annotations_hash_contribution(annotations))
     return h.hexdigest()[:16]
 
 
-def _build_rollup_message(iso_week: str, dailies: list[dict]) -> str:
+def _build_rollup_message(iso_week: str, dailies: list[dict],
+                          annotations: list[dict] | None = None) -> str:
+    """Build the user message for the weekly rollup prompt.
+
+    annotations: list of annotation rows for this iso_week
+    (scope='weekly', key=iso_week). If non-empty, a PINNED CORRECTIONS block
+    is inserted after the source material and before the final instruction.
+    """
     start, end = _week_bounds(iso_week)
     lines = [f"WEEK: {iso_week}  ({start} → {end})", ""]
     lines.append(f"DAILY ENTRIES ({len(dailies)}):")
@@ -88,6 +109,12 @@ def _build_rollup_message(iso_week: str, dailies: list[dict]) -> str:
         lines.append("ALLOWED ANCHORS — you may cite ONLY these [YYYY-MM-DD]:")
         lines.append("  " + "  ".join(f"[{d['date']}]" for d in dailies))
     lines.append("")
+
+    # PINNED CORRECTIONS — user annotations for this week (Phase E v2).
+    # Placed after source material, before the final instruction.
+    if annotations:
+        lines.append(format_pinned_corrections(annotations))
+
     lines.append("Write the weekly retrospective now.")
     return "\n".join(lines)
 
@@ -99,7 +126,12 @@ def narrate_week(conn: sqlite3.Connection, iso_week: str, *,
     dailies = _load_daily_for_week(conn, iso_week)
     if not dailies:
         return None
-    week_hash = _weekly_input_hash(dailies)
+
+    # Phase E v2: load weekly-scoped annotations so they participate in the hash
+    # and are injected into the prompt as PINNED CORRECTIONS.
+    annotations = load_annotations_for_scope(conn, "weekly", iso_week)
+
+    week_hash = _weekly_input_hash(dailies, annotations)
 
     if not force:
         row = conn.execute(
@@ -109,7 +141,7 @@ def narrate_week(conn: sqlite3.Connection, iso_week: str, *,
         if row and row["prompt_version"] == ROLLUP_PROMPT_VERSION and row["input_hash"] == week_hash:
             return {"iso_week": iso_week, "skipped": True}
 
-    user_msg = _build_rollup_message(iso_week, dailies)
+    user_msg = _build_rollup_message(iso_week, dailies, annotations)
 
     cmd = [
         binary, "-p",

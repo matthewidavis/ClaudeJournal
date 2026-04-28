@@ -45,26 +45,69 @@ def _load_briefs_for_day(conn: sqlite3.Connection, date: str,
     return out
 
 
-def _load_annotations_for_day(conn: sqlite3.Connection, date: str) -> list[dict]:
-    """Load user-authored annotations for a daily narration (Phase E).
+def load_annotations_for_scope(conn: sqlite3.Connection,
+                               scope: str, key: str) -> list[dict]:
+    """Load user-authored annotations for any narration scope (Phase E v2).
 
-    Returns annotation rows ordered by pin_priority DESC, id ASC so that
-    high-priority corrections always appear first in the prompt block.
-    Only 'daily' scope annotations are returned — project_day, topic, arc,
-    weekly, and monthly scope wiring is deferred to a follow-up plan (E5).
+    Generic loader for all scopes: 'daily', 'topic', 'project_arc',
+    'weekly', 'monthly'. Returns rows ordered by pin_priority DESC, id ASC
+    so that high-priority corrections always appear first in the prompt block.
+
+    Returns an empty list on any DB error (annotations table may not exist
+    on old DBs — safe to skip).
     """
     try:
         rows = conn.execute(
             """SELECT id, annotation_type, text, pin_priority, scope_tag
                FROM annotations
-               WHERE target_scope = 'daily' AND target_key = ?
+               WHERE target_scope = ? AND target_key = ?
                ORDER BY pin_priority DESC, id ASC""",
-            (date,),
+            (scope, key),
         ).fetchall()
         return [dict(r) for r in rows]
     except Exception:
         # annotations table may not exist on old DBs — safe to skip
         return []
+
+
+def _load_annotations_for_day(conn: sqlite3.Connection, date: str) -> list[dict]:
+    """Load user-authored annotations for a daily narration (Phase E).
+
+    Delegates to load_annotations_for_scope() with scope='daily'.
+    """
+    return load_annotations_for_scope(conn, "daily", date)
+
+
+def format_pinned_corrections(annotations: list[dict]) -> str:
+    """Format a PINNED CORRECTIONS block for injection into any narration prompt.
+
+    Uses the exact same ground-truth framing for every scope:
+    'USER CORRECTIONS (ground truth -- integrate these naturally,
+    never contradict, never ignore)'. pin_priority >= 2 items get a
+    [HIGH PRIORITY] marker.
+
+    Returns an empty string when annotations is empty.
+    """
+    if not annotations:
+        return ""
+    lines = [
+        "USER CORRECTIONS (ground truth — integrate these naturally, "
+        "never contradict, never ignore):",
+        "The user has corrected the following facts or details. "
+        "Treat every item below as authoritative. Weave corrections into the "
+        "prose as if they were always true — do not explicitly note that a "
+        "correction was made. Do not omit any high-priority item.",
+    ]
+    for ann in annotations:
+        ann_type = ann.get("annotation_type", "append")
+        priority = ann.get("pin_priority", 1)
+        text = (ann.get("text") or "").strip()
+        if not text:
+            continue
+        priority_marker = " [HIGH PRIORITY]" if priority >= 2 else ""
+        lines.append(f"  [{ann_type.upper()}{priority_marker}] {text}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _annotations_hash_contribution(annotations: list[dict]) -> bytes:

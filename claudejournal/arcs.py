@@ -20,11 +20,17 @@ from datetime import datetime, timezone
 
 from claudejournal.config import Config
 from claudejournal.db import connect
+from claudejournal.narrate import (
+    _annotations_hash_contribution,
+    format_pinned_corrections,
+    load_annotations_for_scope,
+)
 
 
 # Bump when the arc prompt meaningfully changes — forces regeneration of all
 # arc pages cleanly via hash invalidation.
-ARC_PROMPT_VERSION = "v1"
+# v2: annotation prompt-pins added (Phase E v2).
+ARC_PROMPT_VERSION = "v2"
 
 
 ARC_SYSTEM = """You produce a personal retrospective of a multi-day project — its arc, not its log. You're writing as the person who did the work, looking back on what they built and learned.
@@ -64,11 +70,14 @@ def _projects_with_narrations(conn: sqlite3.Connection) -> list[dict]:
     return [{"id": r["id"], "name": r["display_name"]} for r in rows]
 
 
-def _arc_input_hash(project_id: str, narrations: list[dict]) -> str:
-    """Deterministic hash over prompt version + project_id + contributing narrations.
+def _arc_input_hash(project_id: str, narrations: list[dict],
+                    annotations: list[dict] | None = None) -> str:
+    """Deterministic hash over prompt version + project_id + narrations + annotations.
 
     When project_day narrations change (new days, updated prose) the hash
-    changes and the arc page regenerates on the next cycle.
+    changes and the arc page regenerates on the next cycle. When annotations
+    change (user edits a correction for this arc), the hash also changes,
+    triggering re-narration with the updated PINNED CORRECTIONS block.
     """
     h = hashlib.sha256()
     h.update(ARC_PROMPT_VERSION.encode())
@@ -81,6 +90,9 @@ def _arc_input_hash(project_id: str, narrations: list[dict]) -> str:
         h.update(b"\x01")
         h.update((n.get("input_hash") or "").encode("utf-8", errors="replace"))
         h.update(b"\x02")
+    if annotations:
+        h.update(b"\x03annotations\x03")
+        h.update(_annotations_hash_contribution(annotations))
     return h.hexdigest()[:16]
 
 
@@ -98,8 +110,15 @@ def _already_current(conn: sqlite3.Connection, project_id: str,
 
 
 def _build_arc_message(project_name: str, project_id: str,
-                       narrations: list[dict], max_chars: int = 14000) -> str:
-    """Build the user message for the arc synthesis prompt."""
+                       narrations: list[dict],
+                       annotations: list[dict] | None = None,
+                       max_chars: int = 14000) -> str:
+    """Build the user message for the arc synthesis prompt.
+
+    annotations: list of annotation rows for this project arc
+    (scope='project_arc', key=project_id). If non-empty, a PINNED CORRECTIONS
+    block is inserted after the source material and before the final instruction.
+    """
     lines = [
         f"PROJECT: {project_name}",
         f"PROJECT_ID: {project_id}",
@@ -123,6 +142,12 @@ def _build_arc_message(project_name: str, project_id: str,
 
     lines.append(body)
     lines.append("")
+
+    # PINNED CORRECTIONS — user annotations for this project arc (Phase E v2).
+    # Placed after source material, before the final instruction.
+    if annotations:
+        lines.append(format_pinned_corrections(annotations))
+
     lines.append(
         "Write a first-person retrospective arc for this project. "
         "Plain paragraphs only — no headers, no bullets, no markdown. 400–800 words."
@@ -209,14 +234,18 @@ def summarize_arc(conn: sqlite3.Connection, project_id: str, project_name: str, 
             print(f"  skip {project_name!r}  (no project_day narrations)")
         return {"generated": 0, "skipped": 1, "reason": "no narrations"}
 
-    ih = _arc_input_hash(project_id, narrations)
+    # Phase E v2: load arc-scoped annotations so they participate in the hash
+    # and are injected into the prompt as PINNED CORRECTIONS.
+    annotations = load_annotations_for_scope(conn, "project_arc", project_id)
+
+    ih = _arc_input_hash(project_id, narrations, annotations)
 
     if not force and _already_current(conn, project_id, ih):
         if verbose:
             print(f"  skip {project_name!r}  (cache hit)")
         return {"generated": 0, "skipped": 1, "reason": "cache"}
 
-    user_msg = _build_arc_message(project_name, project_id, narrations)
+    user_msg = _build_arc_message(project_name, project_id, narrations, annotations)
     prose = _call_claude_prose(user_msg, ARC_SYSTEM, model=model)
 
     _persist_arc(conn, project_id, prose, ih, model)
@@ -232,7 +261,8 @@ def list_arcs(conn: sqlite3.Connection) -> list[dict]:
     results = []
     for p in projects:
         narrations = _load_project_day_narrations(conn, p["id"])
-        ih = _arc_input_hash(p["id"], narrations)
+        annotations = load_annotations_for_scope(conn, "project_arc", p["id"])
+        ih = _arc_input_hash(p["id"], narrations, annotations)
         row = conn.execute(
             "SELECT input_hash, prompt_version, generated_at FROM narrations "
             "WHERE scope='project_arc' AND key=?",

@@ -228,9 +228,9 @@ def _build_narration_message(inp: NarrationInput) -> str:
     # PINNED CORRECTIONS — user-authored annotations for this date (Phase E).
     # These are ground truth. Treat them as absolute corrections: integrate
     # naturally, never contradict, never omit if pin_priority >= 1.
-    # Scope is intentionally limited to 'daily' narration in v1. Topic, arc,
-    # weekly, and monthly scopes are deferred to a follow-up plan (see E5 design
-    # note) to limit blast radius.
+    # Daily narrations use this path. Topic, arc, weekly, and monthly generators
+    # have their own message-builder functions that call format_pinned_corrections()
+    # from narrate.py directly (Phase E v2).
     if inp.scope == "daily" and inp.annotations:
         lines.append(
             "USER CORRECTIONS (ground truth — integrate these naturally, "

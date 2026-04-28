@@ -1,8 +1,9 @@
 # Design Note: Annotation Prompt-Pin Extension to Remaining Scopes
 
 **Phase**: E5 (WikiLLM/OpenBrain Parity Plan, 2026-04-27)
-**Status**: DESIGN ONLY — implementation deferred to follow-up plan
+**Status**: IMPLEMENTED — 2026-04-27 (plan: 2026-04-27-annotation-prompt-pins-v2)
 **Scope covered by v1 (Phase E)**: `daily` narration only
+**Scope covered by v2 (Phase E5)**: `topic`, `project_arc`, `weekly`, `monthly`
 
 ---
 
