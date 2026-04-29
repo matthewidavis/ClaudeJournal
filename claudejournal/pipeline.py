@@ -125,6 +125,19 @@ def run_all(cfg: Config, *,
     stats["entity_extract"] = entity_stats
     _tick("entity_extract", 1, 1, "done")
 
+    # [2f] Entity synthesis — LLM-synthesized prose for qualifying entities.
+    # Idempotent: skips entities whose input hash matches an existing narration.
+    # Uses haiku model (same as topics) to keep cost bounded.
+    if verbose: print("[2f] entity-synthesis")
+    _tick("entity_synthesis", 0, 1, "starting")
+    from claudejournal import entity_synthesis as entitysynthmod
+    entity_synth_stats = entitysynthmod.run(
+        cfg, all_=True, force=force, verbose=verbose,
+        progress=lambda d, t, l="": _tick("entity_synthesis", d, t, l),
+    )
+    stats["entity_synthesis"] = entity_synth_stats
+    _tick("entity_synthesis", 1, 1, "done")
+
     # Interludes run BEFORE narrate so today's quiet-day placeholder lands
     # immediately on the first pipeline pass — even if narrate is still
     # working through older backlog. The interlude loop processes

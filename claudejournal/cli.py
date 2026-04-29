@@ -142,6 +142,23 @@ def main(argv: list[str] | None = None) -> int:
     p_topic_sum.add_argument("--model", default=None,
                              help="Claude model (default: config.topic_model)")
 
+    p_entity_synth = sub.add_parser(
+        "entity-synthesize",
+        help="Generate LLM-synthesized prose for entity profile pages",
+    )
+    p_entity_synth.add_argument(
+        "--all", action="store_true", default=True,
+        help="Run for all qualifying entities (default: True)",
+    )
+    p_entity_synth.add_argument(
+        "--force", action="store_true",
+        help="Re-generate even if hash matches",
+    )
+    p_entity_synth.add_argument(
+        "--model", default=None,
+        help="Claude model (default: haiku)",
+    )
+
     p_doc = sub.add_parser("doc", help="Manage curated external documents")
     doc_sub = p_doc.add_subparsers(dest="doc_cmd", required=True)
 
@@ -1024,6 +1041,22 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"done: {s['generated']} generated, {s['skipped']} skipped")
         finally:
             conn.close()
+        return 0
+
+    if args.cmd == "entity-synthesize":
+        from claudejournal import entity_synthesis as entitysynthmod
+        from claudejournal.db import connect
+        conn = connect(cfg.db_path)
+        model = args.model or "haiku"
+        try:
+            s = entitysynthmod.run(cfg, all_=True, force=args.force,
+                                   model=model, verbose=True)
+        finally:
+            conn.close()
+        print(
+            f"done: {s['generated']} generated, {s['skipped']} skipped, "
+            f"{s.get('errors', 0)} errors  (total qualifying: {s['total']})"
+        )
         return 0
 
     if args.cmd == "doc":

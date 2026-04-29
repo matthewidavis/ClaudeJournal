@@ -1405,6 +1405,27 @@ footer {
 .entity-learning-footer a { color: var(--accent); text-decoration: none; }
 .entity-learning-footer a:hover { text-decoration: underline; }
 
+/* ── Entity synthesis hero (Task 12) ────────────────────────────────── */
+.entity-synthesis-hero {
+  margin: 0 0 28px;
+  padding: 18px 20px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent-soft);
+  border-radius: 4px;
+  font-size: 15.5px;
+  line-height: 1.72;
+  color: var(--fg);
+}
+.entity-synthesis-hero p {
+  margin: 0 0 0.85em;
+}
+.entity-synthesis-hero p:last-child {
+  margin-bottom: 0;
+}
+.entity-synthesis-hero a { color: var(--accent); text-decoration: none; }
+.entity-synthesis-hero a:hover { text-decoration: underline; }
+
 /* ── Annotations (Phase E) ───────────────────────────────────────────── */
 /* Annotate button — lives next to the inspect chips */
 .annotate-btn {
@@ -5470,11 +5491,22 @@ def render_connections_page(connections_graph: dict, anchor_base: str = "./") ->
     )
 
 
-def render_entity_profile_page(entity_data: dict, anchor_base: str = "../") -> str:
+def render_entity_profile_page(entity_data: dict, anchor_base: str = "../",
+                               synthesis_prose: str | None = None,
+                               known_docs: list | None = None,
+                               known_topics: list | None = None) -> str:
     """Standalone entity profile page (out/entities/<slug>.html).
 
     entity_data: as returned by entity_pages.build_entity_profile_data().
+    synthesis_prose: optional LLM-synthesized hero paragraph from
+        entity_synthesis.load_entity_synthesis(). When present, rendered
+        as a hero section above the data tables.
+    known_docs, known_topics: passed through to link_anchors / link_topic_titles
+        so cross-references in synthesis prose work the same way as in
+        topic/arc prose.
+
     Shows:
+      0. (Optional) LLM synthesis hero paragraph.
       1. Projects timeline — all projects using this entity with date ranges
          and key learnings from briefs that actually mention this entity.
       2. All learnings mentioning this entity.
@@ -5495,6 +5527,24 @@ def render_entity_profile_page(entity_data: dict, anchor_base: str = "../") -> s
         f'{total_dates} day{"s" if total_dates != 1 else ""}'
         + type_label
     )
+
+    # ---- LLM synthesis hero section (optional) ----
+    synthesis_html = ""
+    if synthesis_prose and synthesis_prose.strip():
+        _known_docs = known_docs or []
+        _known_topics = known_topics or []
+        prose_paragraphs = [p.strip() for p in synthesis_prose.split("\n\n") if p.strip()]
+        para_htmls: list[str] = []
+        for para in prose_paragraphs:
+            h = link_anchors(esc(para), base_path=anchor_base)
+            h = link_doc_titles(h, _known_docs, base_path=anchor_base)
+            h = link_topic_titles(h, _known_topics, base_path=anchor_base)
+            para_htmls.append(f"<p>{h}</p>")
+        synthesis_html = (
+            f'<div class="entity-synthesis-hero">'
+            + "".join(para_htmls)
+            + f'</div>'
+        )
 
     # Project timeline section
     project_cards: list[str] = []
@@ -5561,6 +5611,7 @@ def render_entity_profile_page(entity_data: dict, anchor_base: str = "../") -> s
         f'<div class="entity-profile-page">'
         f'  <h2>{esc(ename)}</h2>'
         f'  <div class="entity-profile-meta">{esc(meta)}</div>'
+        f'  {synthesis_html}'
         f'  {projects_section}'
         f'  {learnings_section}'
         f'</div>'
