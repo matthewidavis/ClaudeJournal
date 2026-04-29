@@ -47,6 +47,10 @@ from claudejournal.templates import (
     render_topic_page,
     render_week_break,
 )
+from claudejournal.connections import (
+    compute_cross_project_connections as _compute_cross_project_connections,
+    compute_all_daily_connections as _compute_all_daily_connections,
+)
 
 
 def _iso_week_of(date: str) -> str:
@@ -339,7 +343,8 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
                        open_loops_items_by_project: dict[str, list[dict]] | None = None,
                        entities_by_date: dict[str, list[str]] | None = None,
                        echoes_by_date: dict[str, dict] | None = None,
-                       annotations_by_date: dict[str, list[dict]] | None = None) -> list[str]:
+                       annotations_by_date: dict[str, list[dict]] | None = None,
+                       daily_connections_by_date: dict[str, list[dict]] | None = None) -> list[str]:
     """Produce the feed entries + week/month breaks interleaved, newest first.
 
     open_loops_by_project: {project_id: count_of_open_loops_older_than_7d}
@@ -355,6 +360,10 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     annotations_by_date: {date: [annotation_dict, ...]} pre-built in render_site()
       from the annotations table (scope='daily'). Each annotation may have a
       _contradiction flag set by the render-time contradiction guard (E6).
+    daily_connections_by_date: {date: [nudge_dict, ...]} pre-built in render_site()
+      from compute_all_daily_connections(). Passed to render_day_entry() so that
+      days with cross-project entity/tag history show a connections chip. Dates
+      absent from the dict have no cross-project signals and render no chip.
     """
     weekly = _weekly_rollups(conn)
     monthly = _monthly_rollups(conn)
@@ -373,6 +382,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
     entities_by_date = entities_by_date or {}
     echoes_by_date = echoes_by_date or {}
     annotations_by_date = annotations_by_date or {}
+    daily_connections_by_date = daily_connections_by_date or {}
 
     # Build a map of date -> project_ids active that day for banner lookup.
     # We use the events table since that's already available without extra queries.
@@ -450,6 +460,7 @@ def _render_feed_pages(conn: sqlite3.Connection, dates: list[str], anchor_base: 
             entities=entities_by_date.get(date, []),
             echoes=echoes_by_date.get(date),
             annotations=annotations_by_date.get(date, []),
+            daily_connections=daily_connections_by_date.get(date),
         ))
         # Doc entries for this date — emitted right after the day so they
         # cluster chronologically. The Library view chip keeps them visible
@@ -934,6 +945,21 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     _echoes_by_date = _compute_all_echoes(conn, dates)
     stats["echoes"] = len(_echoes_by_date)
 
+    # ---------- Pre-compute cross-project connections (Phase A) ----------
+    # Two passes, both O(n) over the corpus:
+    #   _connections_by_project: {project_id: [connection_dict, ...]}
+    #     — passed to render_arc_page() so arc pages show "Related work" section.
+    #   _daily_connections_by_date: {date: [nudge_dict, ...]}
+    #     — passed to render_day_entry() so daily entries show connections chip.
+    # Both computations share the same internal entity/tag maps built once per
+    # render; capping at 3 nudges per day keeps the per-entry rendering O(1).
+    _connections_by_project = _compute_cross_project_connections(conn)
+    _daily_connections_by_date = _compute_all_daily_connections(conn, dates)
+    stats["connections"] = sum(
+        len(v) for v in _connections_by_project.values()
+    )
+    stats["connections_dates"] = len(_daily_connections_by_date)
+
     # ---------- Pre-compute annotations for feed entries (Phase E) ----------
     # Load all 'daily' scope annotations once; group by target_key (date).
     # Apply the render-time contradiction guard: for 'correction' annotations,
@@ -1105,7 +1131,8 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                                  open_loops_items_by_project=_open_loops_items_by_project,
                                  entities_by_date=entities_by_date,
                                  echoes_by_date=_echoes_by_date,
-                                 annotations_by_date=_annotations_by_date)
+                                 annotations_by_date=_annotations_by_date,
+                                 daily_connections_by_date=_daily_connections_by_date)
     # Shared filter-data bundle — the main feed AND every standalone
     # deep-link page (weekly/monthly/topic/arc/doc) uses the same chip
     # bar, so they all pass the same filter data into render_site_header.
@@ -1198,6 +1225,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                 generated_at=arc_row["generated_at"] or "",
                 backlinks=arc_backlinks,
                 annotations=_annotations_by_arc.get(pid, []),
+                connections=_connections_by_project.get(pid, []),
             )
             header = render_site_header(
                 site_title="ClaudeJournal",

@@ -601,6 +601,49 @@ a.topic-link:hover { border-bottom-style: solid; }
 }
 .arc-footer a:hover { border-bottom-style: solid; }
 
+/* ── Cross-project connections section (arc pages) ───────────────────── */
+.arc-connections {
+  margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--rule);
+}
+.arc-connections-heading {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin: 0 0 12px;
+  font-family: ui-monospace, Consolas, monospace; font-weight: 500;
+}
+.arc-conn-item {
+  margin-bottom: 12px; padding-left: 0;
+}
+.arc-conn-signal {
+  font-size: 13px; font-weight: 500; color: var(--fg);
+  margin-bottom: 4px;
+}
+.arc-conn-signal .conn-signal-type {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  margin-right: 5px;
+  background: var(--chip); padding: 1px 5px; border-radius: 8px;
+}
+.arc-conn-projects {
+  display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px;
+  margin-top: 3px; padding-left: 2px;
+}
+.arc-conn-proj {
+  display: inline-flex; align-items: baseline; gap: 4px;
+}
+.arc-conn-proj a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+}
+.arc-conn-proj a:hover { border-bottom-style: solid; }
+.arc-conn-proj .conn-date-count {
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  font-size: 10px;
+}
+.arc-conn-learning {
+  color: var(--muted); font-size: 12px; font-style: italic;
+  margin-top: 2px; padding-left: 2px; line-height: 1.5;
+}
+
 /* Day-has-docs indicator — small chip in the day header. */
 .day-docs {
   display: inline-flex; align-items: center; gap: 4px;
@@ -1127,6 +1170,48 @@ footer {
 .echo-item a:hover { color: var(--accent); border-bottom-color: var(--accent); }
 .echo-sep { color: var(--rule); }
 
+/* ── Cross-project connections inspect chip panel ────────────────────── */
+.conn-nudge-list {
+  list-style: none; padding: 0; margin: 0 0 8px 0;
+  font-size: 13px;
+}
+.conn-nudge-item {
+  padding: 6px 0; border-bottom: 1px solid var(--rule); line-height: 1.5;
+}
+.conn-nudge-item:last-child { border-bottom: none; }
+.conn-nudge-signal {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+}
+.conn-nudge-name {
+  font-weight: 500; color: var(--fg);
+}
+.conn-nudge-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  background: var(--chip); padding: 1px 5px; border-radius: 8px;
+}
+.conn-nudge-proj {
+  color: var(--muted); font-size: 12px;
+}
+.conn-nudge-proj a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px dotted var(--accent-soft);
+}
+.conn-nudge-proj a:hover { border-bottom-style: solid; }
+.conn-nudge-proj .conn-proj-count {
+  color: var(--muted); font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+}
+.conn-nudge-learning {
+  color: var(--muted); font-size: 12px; font-style: italic;
+  margin-top: 2px; line-height: 1.45;
+}
+.conn-nudge-more {
+  font-size: 11px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  margin-top: 6px;
+}
+
 /* ── Temporal echoes standalone page (out/echoes.html) ───────────────── */
 .echoes-page {
   max-width: 720px; margin: 20px auto; padding: 0 0 40px;
@@ -1553,13 +1638,19 @@ FILTER_WIDGET = """
       const _atRoot = (anchorBase === './' || anchorBase === '');
       const _isIndex = _path === '/' || _path.endsWith('/index.html') || _path === '';
       const onHomePage = _atRoot && _isIndex;
-      const filtered = !!state.axis || state.views.size > 0;
+      // Count active filter "sources": axis selection (1 if any), plus each
+      // active view chip. Clear surfaces on home only when at least TWO
+      // sources are active — with one source, clicking the chip itself
+      // already clears it, so a dedicated Clear would just duplicate that
+      // affordance. Two-or-more is the case where chip-by-chip toggling is
+      // tedious enough that one-click reset earns its slot.
+      const _filterSources = (state.axis ? 1 : 0) + state.views.size;
       // Clear chip — sits at the end of the modes row. On deep-link pages
-      // it's always present and navigates back to the main feed. On the
-      // main feed itself it's only present when something is filtered;
-      // clicking it resets all filters in place. Pristine main feed = no
-      // chip (no-op).
-      const showClear = !onHomePage || filtered;
+      // (including standalone nav targets) it's always present and
+      // navigates back to the main feed. On the main feed itself it's
+      // only present when ≥2 filter sources are active and a one-click
+      // reset is genuinely faster than toggling each chip individually.
+      const showClear = !onHomePage || _filterSources >= 2;
       const findActive = state.axis === 'search';
       modesRow.appendChild(makeChip(AXIS_LABELS.search, 'mode axis-search' + (findActive ? ' active' : ''), () => {
         if (state.axis === 'search') { state.axis = null; state.value = null; state.mode = null; }
@@ -1589,6 +1680,12 @@ FILTER_WIDGET = """
             saveViews(state.views);
             apply();
           } else {
+            // Deep-link page: reset persisted view preferences before
+            // navigating so the destination home loads pristine. Without
+            // this, localStorage retains whatever the user had toggled
+            // before they navigated away, and home reopens with the same
+            // view chips selected — making Clear feel partial.
+            try { saveViews(new Set()); } catch (e) {}
             window.location.href = anchorBase + 'index.html';
           }
         }));
@@ -3071,7 +3168,8 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
                                  entities: list[dict] | None = None,
                                  echoes: dict | None = None,
                                  open_loops_items: list[dict] | None = None,
-                                 anchor_base: str = "./") -> tuple[str, str, str, str]:
+                                 anchor_base: str = "./",
+                                 daily_connections: list[dict] | None = None) -> tuple[str, str, str, str]:
     """Per-category inspect chips. Each chip toggles its own panel. Multiple
     can be open at once.
 
@@ -3085,7 +3183,7 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
     the bottom of the entry.
 
     Inspect-row order: briefs → learned → prompts → moments → files →
-    entities → memory → loops.
+    entities → memory → loops → connections.
 
     Header-row order: updated.
 
@@ -3097,6 +3195,10 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
     entities: [{key, label, type}] for this date.
     echoes: temporal recall dict ({prior_years, recurring_friction, milestones}).
     open_loops_items: list of loop dicts touching today's projects, oldest first.
+    daily_connections: list of nudge dicts from compute_all_daily_connections().
+      When provided and non-empty, a "connections" inspect chip is appended to
+      the chip row. The panel lists each connection with project + top learning.
+      Searchable so users can filter by project/tool name.
     """
     n_files = len(files); n_prompts = len(prompts); n_snips = len(snippets)
     n_briefs = len(briefs) if briefs else 0
@@ -3323,6 +3425,64 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
         _add("loops", "loops", loops_body,
              searchable=True, search_placeholder="filter loops...",
              count=n_loops)
+
+    # --- connections (cross-project entity/tag nudges) ---
+    # Each nudge says: "X also used in Project Y (N dates), with a top learning."
+    # Panel is searchable so users can filter by project or tool name.
+    # Chip row order: after loops, before updated. Cap at 3 (already applied
+    # upstream by compute_all_daily_connections, but defensively capped here too).
+    conn_nudges = (daily_connections or [])[:3]
+    if conn_nudges:
+        import urllib.parse as _up
+        n_conn = len(conn_nudges)
+        conn_rows: list[str] = []
+        for cn in conn_nudges:
+            cn_name = cn.get("name", "")
+            cn_type = cn.get("signal_type", "entity")
+            cn_proj = cn.get("other_project", "")
+            cn_proj_id = cn.get("other_project_id", "")
+            cn_count = cn.get("other_project_date_count", 0)
+            cn_learning = cn.get("top_learning", "")
+            cn_total = cn.get("total_other_projects", 1)
+            cn_url = cn.get("arc_url", "")
+            # arc_url from connections.py is already "projects/<name>/index.html"
+            full_url = f"{anchor_base}{cn_url}"
+            type_badge = (
+                '<span class="conn-nudge-badge">'
+                + esc("tool" if cn_type == "entity" else "tag")
+                + '</span>'
+            )
+            proj_link = (
+                f'<a href="{esc(full_url)}">{esc(cn_proj)}</a>'
+                f' <span class="conn-proj-count">({cn_count}d)</span>'
+            )
+            extra_proj_note = ""
+            if cn_total > 1:
+                extra_proj_note = (
+                    f' <span class="conn-nudge-badge">+{cn_total - 1} more</span>'
+                )
+            learning_html = ""
+            if cn_learning:
+                display_l = cn_learning[:120] + ("…" if len(cn_learning) > 120 else "")
+                learning_html = (
+                    f'<div class="conn-nudge-learning filterable">'
+                    f'&ldquo;{esc(display_l)}&rdquo;'
+                    f'</div>'
+                )
+            conn_rows.append(
+                f'<li class="conn-nudge-item filterable">'
+                f'  <div class="conn-nudge-signal">'
+                f'    {type_badge}'
+                f'    <span class="conn-nudge-name">{esc(cn_name)}</span>'
+                f'    <span class="conn-nudge-proj">{proj_link}{extra_proj_note}</span>'
+                f'  </div>'
+                f'  {learning_html}'
+                f'</li>'
+            )
+        conn_body = f'<ul class="conn-nudge-list">{"".join(conn_rows)}</ul>'
+        _add("connections", "connections", conn_body,
+             searchable=True, search_placeholder="filter connections...",
+             count=n_conn)
 
     # --- updated (narration + brief generation timestamps) ---
     # One chip showing when this entry was last written. The panel lists the
@@ -3643,7 +3803,8 @@ def render_day_entry(date: str, narration: str, mood: str,
                      open_loops_items: list[dict] | None = None,
                      entities: list[dict] | None = None,
                      echoes: dict | None = None,
-                     annotations: list[dict] | None = None) -> str:
+                     annotations: list[dict] | None = None,
+                     daily_connections: list[dict] | None = None) -> str:
     """Single day entry for the feed. Narration is hero; activity is disclosed.
 
     open_loops_count: number of open friction loops older than 7 days that
@@ -3659,6 +3820,11 @@ def render_day_entry(date: str, narration: str, mood: str,
       date. Each may carry a _contradiction boolean flag (set by the render-time
       contradiction guard) that triggers a warning icon in the UI. Annotation
       text is rendered verbatim — never passed through post_process linkification.
+
+    daily_connections: list of cross-project nudge dicts from
+      compute_all_daily_connections(). When non-empty, a "connections" inspect
+      chip is added to the chip row. The chip panel lists each connection with
+      the other project and top learning. Maximum 3 nudges (applied upstream).
     """
     pretty = _pretty_date_safe(date)
     known_docs = known_docs or []
@@ -3692,6 +3858,7 @@ def render_day_entry(date: str, narration: str, mood: str,
         echoes=echoes,
         open_loops_items=open_loops_items or [],
         anchor_base=anchor_base,
+        daily_connections=daily_connections,
     )
     # Note: the open-loops surface is now an inspect chip ("loops") inside
     # inspect_row_html, with a hybrid panel that lists this day's loops
@@ -4070,6 +4237,94 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
     )
 
 
+def _render_arc_connections(connections: list[dict], anchor_base: str = "../../") -> str:
+    """Render the 'Related work in other projects' section for an arc page.
+
+    connections: list of connection dicts as returned by
+    compute_cross_project_connections()[project_id].
+
+    Returns empty string when connections list is empty.
+    Shows up to 8 connection items to keep the section compact.
+    Each item shows entity/tag name, other projects with date counts,
+    and the top learning from the most relevant project.
+    """
+    if not connections:
+        return ""
+
+    import urllib.parse
+    items_html: list[str] = []
+    # Cap at 8 for arc pages — enough to give a comprehensive picture
+    # without overwhelming the page.
+    for conn_item in connections[:8]:
+        signal_type = conn_item.get("signal_type", "entity")
+        name = conn_item.get("name", "")
+        other_projects = conn_item.get("other_projects", [])
+        if not other_projects:
+            continue
+
+        type_label = "tool" if signal_type == "entity" else "tag"
+        signal_badge = (
+            f'<span class="conn-signal-type">{esc(type_label)}</span>'
+        )
+
+        # Build the project pills: each shows name + date count + optional learning
+        proj_parts: list[str] = []
+        for op in other_projects[:4]:  # cap at 4 other projects per signal
+            op_name = op.get("project_name", "")
+            op_url = op.get("arc_url", "")
+            date_count = op.get("date_count", 0)
+            # arc_url from connections.py uses ../../projects/<name>/index.html
+            # but anchor_base here is already ../../, so we use the relative part
+            full_url = anchor_base + op_url.lstrip("../../").lstrip("/")
+            # More reliable: rebuild from anchor_base
+            pname_enc = urllib.parse.quote(op_name, safe="")
+            final_url = f"{anchor_base}projects/{pname_enc}/index.html"
+            count_badge = (
+                f'<span class="conn-date-count">{date_count}d</span>'
+            )
+            proj_parts.append(
+                f'<span class="arc-conn-proj">'
+                f'<a href="{esc(final_url)}">{esc(op_name)}</a>'
+                f'{count_badge}'
+                f'</span>'
+            )
+
+        # Best learning comes from the highest-date-count project
+        best_learning = ""
+        if other_projects and other_projects[0].get("top_learnings"):
+            best_learning = other_projects[0]["top_learnings"][0]
+
+        learning_html = ""
+        if best_learning:
+            # Truncate to ~120 chars for readability
+            display_learning = best_learning[:120] + ("…" if len(best_learning) > 120 else "")
+            learning_html = (
+                f'<div class="arc-conn-learning">'
+                f'&ldquo;{esc(display_learning)}&rdquo;'
+                f'</div>'
+            )
+
+        items_html.append(
+            f'<div class="arc-conn-item">'
+            f'  <div class="arc-conn-signal">'
+            f'    {signal_badge}{esc(name)}'
+            f'  </div>'
+            f'  <div class="arc-conn-projects">{"".join(proj_parts)}</div>'
+            f'  {learning_html}'
+            f'</div>'
+        )
+
+    if not items_html:
+        return ""
+
+    return (
+        f'<div class="arc-connections">'
+        f'  <div class="arc-connections-heading">Related work in other projects</div>'
+        f'  {"".join(items_html)}'
+        f'</div>'
+    )
+
+
 def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", *,
                     first_date: str = "",
                     last_date: str = "",
@@ -4079,11 +4334,17 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
                     topic_slugs: dict[str, str] | None = None,
                     generated_at: str = "",
                     backlinks: list[dict] | None = None,
-                    annotations: list[dict] | None = None) -> str:
+                    annotations: list[dict] | None = None,
+                    connections: list[dict] | None = None) -> str:
     """Standalone project arc retrospective page.
 
     anchor_base: path from the arc page (out/projects/<name>/index.html)
     to the site root — default '../../'.
+
+    connections: list of cross-project connection dicts as returned by
+    compute_cross_project_connections()[project_id]. When non-empty, a
+    "Related work in other projects" section is rendered between the
+    arc body and the backlinks section.
     """
     from claudejournal.post_process import link_anchors, link_doc_titles
 
@@ -4135,6 +4396,9 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
 
     ann_html = _render_annotation_block(annotations or [])
 
+    # --- Related work in other projects section ---
+    connections_html = _render_arc_connections(connections or [], anchor_base=anchor_base)
+
     return (
         f'<article class="arc-page">'
         f'  <div class="arc-tag-label">project arc</div>'
@@ -4142,6 +4406,7 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
         f'  {meta_html}'
         f'  <div class="arc-body">{paragraphs_html}</div>'
         f'  {ann_html}'
+        f'  {connections_html}'
         f'  {backlinks_html}'
         f'  <div class="arc-footer">{view_link}</div>'
         f'</article>'
