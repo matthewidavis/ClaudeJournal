@@ -2,6 +2,7 @@
 
 Phase A: Render-time callouts — no model calls, pure SQL + Python.
 Phase B: Global connections graph + Tier 2 textual similarity signals.
+Phase C: Transfer-recall MCP query — "what does this remind me of?"
 
 Core exports:
   compute_cross_project_connections(conn)
@@ -18,6 +19,13 @@ Core exports:
       Full cross-project entity x learnings graph for the Connections page.
       Includes Tier 2 signals: transfer opportunities (similar-but-different
       learnings across projects) via significant-word overlap.
+
+  transfer_recall(conn, query, *, project_filter=None, limit=10)
+      -> [result_dict, ...]
+      Cross-project transfer-recall: given a tool name, concern, or free text,
+      find the most relevant prior learnings from other projects. Three signal
+      tiers: (1) entity name match, (2) tag overlap, (3) FTS5 full-text search.
+      Annotation-suppressed content is never surfaced.
 """
 from __future__ import annotations
 
@@ -775,3 +783,511 @@ def compute_connections_graph(conn: sqlite3.Connection) -> dict:
         "total_connections": total_connections,
         "total_transfer_opps": total_transfer,
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase C: transfer_recall — "what does this remind me of?"
+# ---------------------------------------------------------------------------
+
+# Score weights for composite ranking
+_TR_WEIGHT_TIER1 = 10.0   # entity name match (strongest signal)
+_TR_WEIGHT_TIER2 = 5.0    # tag overlap
+_TR_WEIGHT_TIER3 = 2.0    # FTS5 BM25 base weight (scaled by BM25 rank)
+
+# Max items per tier before merging
+_TR_TIER1_MAX = 20
+_TR_TIER2_MAX = 20
+_TR_TIER3_MAX = 20
+
+# Minimum word length to be considered a "signal word" in the query
+_TR_MIN_QUERY_WORD_LEN = 3
+
+
+def _query_sig_words(query: str) -> set[str]:
+    """Extract significant words from query for Tier 2 tag matching."""
+    import re as _re2
+    tokens = _re2.findall(r"[a-zA-Z][a-zA-Z0-9_'-]*", query.lower())
+    return {
+        t for t in tokens
+        if len(t) >= _TR_MIN_QUERY_WORD_LEN and t not in _T2_STOPWORDS
+    }
+
+
+def _check_suppressed_projects(
+    conn: sqlite3.Connection,
+    suppressed_dates: set[str],
+) -> set[str]:
+    """Return set of project_ids where ALL known brief dates are suppressed.
+
+    A project is fully suppressed only if every date in session_briefs for
+    that project appears in suppressed_dates. In practice this is rare — the
+    suppression gate acts per-date, not per-project, for individual briefs.
+    This helper is used for quick project-level pre-filtering.
+    """
+    fully_suppressed: set[str] = set()
+    if not suppressed_dates:
+        return fully_suppressed
+    rows = conn.execute(
+        "SELECT project_id, GROUP_CONCAT(DISTINCT date) AS dates FROM session_briefs GROUP BY project_id"
+    ).fetchall()
+    for r in rows:
+        all_dates = set((r["dates"] or "").split(",")) - {""}
+        if all_dates and all_dates.issubset(suppressed_dates):
+            fully_suppressed.add(r["project_id"])
+    return fully_suppressed
+
+
+def _load_project_display_names(conn: sqlite3.Connection) -> dict[str, str]:
+    """Return {project_id: display_name} for all projects."""
+    rows = conn.execute("SELECT id, display_name FROM projects").fetchall()
+    return {r["id"]: (r["display_name"] or r["id"]) for r in rows}
+
+
+def transfer_recall(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    project_filter: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Find cross-project learnings relevant to the given query.
+
+    Implements three signal tiers:
+
+    Tier 1 — Shared entity match:
+        If the query mentions a known entity name (case-insensitive substring),
+        pull all briefs where that entity appears across all projects, ranked
+        by recency + learning density. Suppressed-date briefs are excluded.
+
+    Tier 2 — Tag overlap:
+        Identify tags in the query string that match known tags in the corpus.
+        Surface learnings from briefs tagged with those tags in other projects.
+
+    Tier 3 — FTS5 full-text search:
+        BM25 retrieval over the `rag_chunks` FTS5 index as a complementary
+        fallback. Catches concepts not yet entitized or tagged. Brief-kind
+        chunks are preferred (they contain structured learned/friction data).
+
+    Args:
+        conn: Open SQLite connection.
+        query: Free text — tool name, concern, code fragment, etc.
+        project_filter: If given, exclude results from this project_id
+            (use the caller's current project so results are always cross-project).
+        limit: Max results to return (default 10, cap at 50).
+
+    Returns:
+        List of dicts (ranked by composite score, best first):
+        {
+          "tier": int,                    # 1, 2, or 3
+          "tier_label": str,              # "entity", "tag", or "fts"
+          "signal": str,                  # entity/tag name, or query excerpt
+          "source_project": str,          # display name
+          "source_project_id": str,
+          "date": str,                    # YYYY-MM-DD of source brief/chunk
+          "excerpt": str,                 # the relevant learned/friction/chunk text
+          "score": float,                 # composite score (higher = better)
+          "entity_profile_hint": str,     # slug of entity profile page, or ""
+        }
+
+    Annotation-suppressed content is never returned. The result set may
+    contain items from multiple tiers for the same project — this is
+    intentional so the caller can see BOTH entity-level and full-text signals.
+    """
+    import re as _re3
+
+    limit = max(1, min(50, int(limit or 10)))
+    query_l = (query or "").strip().lower()
+    if not query_l:
+        return []
+
+    suppressed_dates = _check_annotations(conn)
+    proj_display = _load_project_display_names(conn)
+
+    # Normalize project_filter: accept either project_id or display_name substring
+    filter_pid: str | None = None
+    if project_filter:
+        pf_l = project_filter.strip().lower()
+        # Try exact project_id first
+        for pid, dname in proj_display.items():
+            if pid.lower() == pf_l or dname.lower() == pf_l:
+                filter_pid = pid
+                break
+        if filter_pid is None:
+            # Substring match on display_name
+            for pid, dname in proj_display.items():
+                if pf_l in dname.lower():
+                    filter_pid = pid
+                    break
+        if filter_pid is None:
+            # Substring match on project_id
+            for pid in proj_display:
+                if pf_l in pid.lower():
+                    filter_pid = pid
+                    break
+
+    # Build entity profile slug map from narrations for hint generation
+    ep_rows = conn.execute(
+        "SELECT key FROM narrations WHERE scope='entity_profile'"
+    ).fetchall()
+    entity_profile_slugs: set[str] = {r["key"] for r in ep_rows}
+
+    def _entity_slug_for(name: str) -> str:
+        """Return the entity profile slug if one exists, else empty string."""
+        # Entity profile keys are the canonical_name (lowercased, hyphenated slug)
+        import re as _re_slug
+        slug = _re_slug.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+        if slug in entity_profile_slugs:
+            return slug
+        return ""
+
+    results: list[dict] = []
+    seen_keys: set[str] = set()   # (project_id, date, excerpt[:80]) to dedup
+
+    def _add_result(
+        tier: int,
+        tier_label: str,
+        signal: str,
+        source_pid: str,
+        date: str,
+        excerpt: str,
+        score: float,
+        entity_name: str = "",
+        source_project_name: str = "",
+    ) -> None:
+        if date in suppressed_dates:
+            return
+        if filter_pid and source_pid == filter_pid:
+            return
+        excerpt = (excerpt or "").strip()
+        if not excerpt:
+            return
+        # Truncate for readability; keep enough context
+        if len(excerpt) > 400:
+            excerpt = excerpt[:400].rsplit(" ", 1)[0] + "…"
+        key = (source_pid, date, excerpt[:80])
+        if key in seen_keys:
+            return
+        seen_keys.add(key)
+        hint = _entity_slug_for(entity_name) if entity_name else ""
+        # Resolve display name: prefer the lookup table; fall back to the
+        # rag_chunks project_name field (used for daily narrations that have
+        # no project_id in the DB).
+        display = proj_display.get(source_pid) or source_project_name or source_pid or "?"
+        results.append({
+            "tier": tier,
+            "tier_label": tier_label,
+            "signal": signal,
+            "source_project": display,
+            "source_project_id": source_pid,
+            "date": date,
+            "excerpt": excerpt,
+            "score": score,
+            "entity_profile_hint": hint,
+        })
+
+    # ------------------------------------------------------------------ #
+    # Tier 1 — Entity name match
+    # ------------------------------------------------------------------ #
+    # Load all entities; check which ones the query mentions
+    entity_rows = conn.execute(
+        "SELECT id, name, canonical_name, type FROM entities"
+    ).fetchall()
+
+    matched_entity_ids: list[tuple[str, str, str]] = []  # (entity_id, name, canonical)
+    for er in entity_rows:
+        ename = (er["name"] or "").strip()
+        cname = (er["canonical_name"] or "").strip()
+        ename_l = ename.lower()
+        cname_l = cname.lower()
+        # Block generic entities from appearing as Tier 1 signals
+        if ename_l in _ENTITY_BLOCKLIST:
+            continue
+        # Check if entity name or canonical_name appears in query
+        if ename_l and ename_l in query_l:
+            matched_entity_ids.append((er["id"], ename, cname))
+        elif cname_l and cname_l != ename_l and cname_l in query_l:
+            matched_entity_ids.append((er["id"], ename, cname))
+
+    for entity_id, ename, cname in matched_entity_ids[:_TR_TIER1_MAX]:
+        # Pull all brief_entities rows for this entity; load the brief JSON
+        be_rows = conn.execute(
+            """SELECT be.date, be.session_id, sb.project_id, sb.brief_json
+               FROM brief_entities be
+               JOIN session_briefs sb ON sb.session_id = be.session_id
+                                     AND sb.date = be.date
+               WHERE be.entity_id = ?
+                 AND sb.date != ''
+               ORDER BY sb.date DESC""",
+            (entity_id,),
+        ).fetchall()
+
+        for br in be_rows:
+            date = br["date"]
+            pid = br["project_id"]
+            if date in suppressed_dates:
+                continue
+            if filter_pid and pid == filter_pid:
+                continue
+            try:
+                brief = json.loads(br["brief_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            # Extract learned + friction items that mention the entity
+            candidates = []
+            for item in (brief.get("learned") or []):
+                if isinstance(item, str) and item.strip():
+                    candidates.append(item.strip())
+            for item in (brief.get("friction") or []):
+                if isinstance(item, str) and item.strip():
+                    candidates.append(item.strip())
+            if not candidates:
+                continue
+            # Score: base weight + recency boost (newer = higher score)
+            # Recency: dates are YYYY-MM-DD strings; lexicographic sort works
+            recency_score = _recency_score(date)
+            score = _TR_WEIGHT_TIER1 + recency_score
+            # Surface the most relevant item (entity name mention wins)
+            best = None
+            for c in candidates:
+                if ename.lower() in c.lower() or cname.lower() in c.lower():
+                    best = c
+                    break
+            if best is None:
+                best = candidates[0]
+            _add_result(1, "entity", ename, pid, date, best, score, entity_name=ename)
+
+    # ------------------------------------------------------------------ #
+    # Tier 2 — Tag overlap
+    # ------------------------------------------------------------------ #
+    query_words = _query_sig_words(query_l)
+    if query_words:
+        # Load all known tags from the corpus; find those that overlap query words
+        # or whose string is a substring of the query
+        tag_map = _load_tag_project_map(conn)
+        matched_tags: list[str] = []
+        for tag in tag_map:
+            tag_words = set(tag.replace("-", " ").replace("_", " ").split())
+            # Direct substring match
+            if tag in query_l or tag.replace("-", " ") in query_l:
+                matched_tags.append(tag)
+            # Word overlap: tag tokens appear in query words
+            elif tag_words and tag_words.issubset(query_words):
+                matched_tags.append(tag)
+
+        for tag in matched_tags[:_TR_TIER2_MAX]:
+            proj_map = tag_map[tag]
+            for pid, entry in proj_map.items():
+                if filter_pid and pid == filter_pid:
+                    continue
+                active_dates = [d for d in sorted(entry["dates"], reverse=True)
+                                if d not in suppressed_dates]
+                if not active_dates:
+                    continue
+                # Use the most recent active date as anchor
+                most_recent = active_dates[0]
+                recency_score = _recency_score(most_recent)
+                score = _TR_WEIGHT_TIER2 + recency_score
+                # Best learning for this tag in this project
+                learnings = entry.get("learnings") or []
+                if not learnings:
+                    continue
+                excerpt = learnings[0]
+                _add_result(2, "tag", tag, pid, most_recent, excerpt, score)
+
+    # ------------------------------------------------------------------ #
+    # Tier 3 — FTS5 full-text search
+    # ------------------------------------------------------------------ #
+    try:
+        # Sanitize query for FTS5: wrap in quotes for phrase-first, then fallback
+        # to individual terms if the quoted search fails
+        fts_query = " ".join(
+            f'"{w}"' if " " not in w else w
+            for w in query_l.split()
+            if len(w) >= _TR_MIN_QUERY_WORD_LEN
+        ) or query_l
+
+        fts_rows = conn.execute(
+            """SELECT rowid, kind, date, project_id, project_name, title,
+                      body, rank
+               FROM rag_chunks
+               WHERE rag_chunks MATCH ?
+               ORDER BY rank
+               LIMIT ?""",
+            (fts_query, _TR_TIER3_MAX),
+        ).fetchall()
+    except Exception:
+        # FTS5 syntax error — fall back to bare term search
+        try:
+            bare = " ".join(
+                w for w in query_l.split()
+                if len(w) >= _TR_MIN_QUERY_WORD_LEN
+            )
+            fts_rows = conn.execute(
+                """SELECT rowid, kind, date, project_id, project_name, title,
+                          body, rank
+                   FROM rag_chunks
+                   WHERE rag_chunks MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (bare, _TR_TIER3_MAX),
+            ).fetchall() if bare else []
+        except Exception:
+            fts_rows = []
+
+    for fr in fts_rows:
+        date = (fr["date"] or "").strip()
+        pid = (fr["project_id"] or "").strip()
+        if not date or date in suppressed_dates:
+            continue
+        if filter_pid and pid == filter_pid:
+            continue
+        body = (fr["body"] or "").strip()
+        if not body:
+            continue
+        # BM25 rank is negative; more negative = better match.
+        # Normalize to a positive score contribution.
+        bm25_val = fr["rank"] or 0.0
+        # rank is negative; abs gives magnitude; cap at 10
+        bm25_contribution = min(abs(bm25_val), 10.0)
+        recency_score = _recency_score(date)
+        score = _TR_WEIGHT_TIER3 + (bm25_contribution * 0.3) + recency_score
+        # For the excerpt: brief kind has structured content; prefer learned lines
+        kind = fr["kind"] or ""
+        chunk_project_name = (fr["project_name"] or "").strip()
+        # Daily narrations have no project_id; use a readable fallback label.
+        if not pid and not chunk_project_name:
+            if kind == "daily_narration":
+                chunk_project_name = "daily journal"
+            elif kind == "topic":
+                chunk_project_name = "topics"
+        if kind == "brief":
+            # Extract a learned or friction line from the body if possible
+            excerpt = _extract_learning_from_brief_body(body)
+        else:
+            # For narration/arc chunks, use the first meaningful sentence
+            excerpt = _first_sentences(body, max_chars=300)
+        _add_result(
+            3, "fts", query[:60], pid, date, excerpt, score,
+            source_project_name=chunk_project_name,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Merge, rank, deduplicate, cap
+    # ------------------------------------------------------------------ #
+    # Sort by tier first (lower = stronger), then by score descending
+    results.sort(key=lambda r: (r["tier"], -r["score"]))
+
+    # Per-project cap: at most 3 results per source project to prevent
+    # one dominant project from flooding the output.
+    _MAX_PER_PROJECT = 3
+    proj_counts: dict[str, int] = {}
+    capped: list[dict] = []
+    for r in results:
+        pid = r["source_project_id"]
+        if proj_counts.get(pid, 0) < _MAX_PER_PROJECT:
+            capped.append(r)
+            proj_counts[pid] = proj_counts.get(pid, 0) + 1
+
+    return capped[:limit]
+
+
+# ---------------------------------------------------------------------------
+# transfer_recall helpers
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+# Epoch reference for recency scoring: use 2025-01-01 as base
+_RECENCY_EPOCH = "2025-01-01"
+
+
+def _recency_score(date_str: str, decay: float = 0.001) -> float:
+    """Return a small recency boost [0, 1] for a date string YYYY-MM-DD.
+
+    More recent dates score closer to 1.0; older dates score closer to 0.
+    The decay constant (default 0.001 per day) means a 1000-day-old entry
+    still contributes ~0.37, so recency is a tiebreaker, not a dominator.
+    """
+    try:
+        from datetime import date as _date
+        d = _date.fromisoformat(date_str)
+        today = _date.today()
+        age_days = max(0, (today - d).days)
+        import math
+        return math.exp(-decay * age_days)
+    except Exception:
+        return 0.0
+
+
+def _extract_learning_from_brief_body(body: str) -> str:
+    """Given the text body of a 'brief' rag_chunk, extract the most useful
+    learning or friction line for display.
+
+    The brief body is free text from session_briefs. It often starts with
+    'goal:' / 'mood:' / 'did:' sections and includes 'learned:' lines.
+    We try to find a 'learned:' bullet; fall back to the 'did:' section.
+    """
+    # Look for 'learned:' section
+    lines = body.split("\n")
+    in_learned = False
+    learned_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith("learned:"):
+            in_learned = True
+            rest = stripped[len("learned:"):].strip()
+            if rest and not rest.startswith("-"):
+                learned_lines.append(rest)
+            continue
+        if in_learned:
+            if stripped.startswith("-") or stripped.startswith("•"):
+                learned_lines.append(stripped.lstrip("-•").strip())
+            elif stripped and not stripped[0].islower():
+                # New section header — stop
+                break
+    if learned_lines:
+        return learned_lines[0][:400]
+
+    # Fall back to 'did:' section
+    in_did = False
+    did_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith("did:"):
+            in_did = True
+            rest = stripped[4:].strip()
+            if rest:
+                did_lines.append(rest)
+            continue
+        if in_did:
+            if stripped and not any(
+                stripped.lower().startswith(p)
+                for p in ("goal:", "mood:", "friction:", "learned:", "tags:")
+            ):
+                did_lines.append(stripped)
+            elif stripped:
+                break
+    if did_lines:
+        combined = " ".join(did_lines)
+        return combined[:400]
+
+    # Final fallback: first non-empty line
+    for line in lines:
+        s = line.strip()
+        if s and len(s) > 20:
+            return s[:400]
+    return body[:400]
+
+
+def _first_sentences(text: str, max_chars: int = 300) -> str:
+    """Return the first `max_chars` characters of text, truncated at a sentence
+    boundary if possible."""
+    if len(text) <= max_chars:
+        return text
+    chunk = text[:max_chars]
+    # Find last sentence boundary
+    for sep in (". ", "! ", "? ", "\n"):
+        idx = chunk.rfind(sep)
+        if idx > max_chars // 2:
+            return chunk[:idx + 1].strip()
+    return chunk.rsplit(" ", 1)[0] + "…"

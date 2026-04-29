@@ -15,6 +15,16 @@ Tools (read-only, local DB only):
   journal_arc(project="")               — full multi-day project arc retrospective
   journal_backlinks(scope, key, limit=40)
                                          — pages that reference a given target
+  journal_connections(query, project="", limit=10)
+                                         — tiered transfer-recall: find prior
+                                          learnings from other projects that are
+                                          relevant to the given query; three signal
+                                          tiers (entity match, tag overlap, FTS5)
+
+Note: journal_search and journal_connections answer different questions.
+  journal_search — raw BM25 retrieval, returns whatever chunks match.
+  journal_connections — structured transfer-recall, ranks results by signal
+    strength (entity > tag > full-text) and attributes the WHY for each hit.
 
 The server runs over stdio (standard MCP transport). Attach to Claude
 Code via:
@@ -409,6 +419,98 @@ def journal_backlinks(scope: str, key: str, limit: int = 40) -> str:
     return "\n".join(parts)
 
 
+def journal_connections(query: str, project: str = "", limit: int = 10) -> str:
+    """Find learnings and patterns from other projects that may be relevant
+    to your current work.
+
+    Works best with a tool or library name, a problem description, or a concept.
+    Results are grouped by signal tier so you can see WHY each item was surfaced:
+
+      Tier 1 — Found via shared entity: the query mentions a known tool or library
+        that appears in other projects. Strong signal — entity-level overlap means
+        the same tool was used in a different context.
+
+      Tier 2 — Found via tag overlap: the query contains tags that match known
+        topic tags in the corpus. Medium signal — topic-level overlap.
+
+      Tier 3 — Found via full-text search: BM25 retrieval over journal chunks.
+        Complements Tier 1/2 by catching concepts not yet entitized or tagged.
+
+    Annotation-suppressed content is never returned — you will not see learnings
+    that the journal owner has flagged as outdated or wrong.
+
+    Note: this tool complements journal_search, it does not replace it.
+    journal_search returns raw BM25 chunks. journal_connections returns ranked,
+    attributed learnings with explicit transfer signal.
+
+    `query`: free text — tool name, concern, code fragment, concept.
+    `project`: if provided, exclude results from this project (pass your current
+      project name so results are always from OTHER projects).
+    `limit`: max results to return (default 10, cap 50).
+    """
+    from claudejournal.connections import transfer_recall
+    cfg = load_config()
+    limit = max(1, min(50, int(limit or 10)))
+    query = (query or "").strip()
+    if not query:
+        return "Provide a query — a tool name, concept, or problem description."
+    conn = connect(cfg.db_path)
+    try:
+        results = transfer_recall(conn, query, project_filter=project or None, limit=limit)
+    finally:
+        conn.close()
+
+    if not results:
+        return f"No cross-project connections found for: {query!r}"
+
+    # Group by tier for prose-readable output
+    tier_groups: dict[int, list[dict]] = {}
+    for r in results:
+        tier_groups.setdefault(r["tier"], []).append(r)
+
+    tier_headers = {
+        1: "entity",
+        2: "tag overlap",
+        3: "full-text search",
+    }
+
+    parts: list[str] = [
+        f"Cross-project connections for {query!r}"
+        + (f" (excluding {project!r})" if project else "")
+        + f" — {len(results)} result{'s' if len(results) != 1 else ''}:"
+    ]
+
+    idx = 1
+    for tier in sorted(tier_groups.keys()):
+        items = tier_groups[tier]
+        # Group items within this tier by their signal value
+        signal_groups: dict[str, list[dict]] = {}
+        for item in items:
+            signal_groups.setdefault(item["signal"], []).append(item)
+
+        for signal, signal_items in signal_groups.items():
+            if tier == 1:
+                header = f"Found via shared entity '{signal}'"
+            elif tier == 2:
+                header = f"Found via tag overlap on '{signal}'"
+            else:
+                header = f"Found via full-text search"
+            parts.append(f"\n{header}:")
+
+            for item in signal_items:
+                proj_name = item["source_project"] or item["source_project_id"] or "?"
+                date = item["date"]
+                excerpt = item["excerpt"]
+                hint = item.get("entity_profile_hint", "")
+                line = f"  [{idx}] {proj_name} ({date}): {excerpt}"
+                if hint:
+                    line += f"\n       [see entity profile: {hint}]"
+                parts.append(line)
+                idx += 1
+
+    return "\n".join(parts)
+
+
 def run_stdio() -> None:
     """Run the MCP server over stdio. Entry point for `claudejournal mcp`."""
     try:
@@ -430,5 +532,6 @@ def run_stdio() -> None:
     mcp.tool()(journal_tools)
     mcp.tool()(journal_arc)
     mcp.tool()(journal_backlinks)
+    mcp.tool()(journal_connections)
 
     mcp.run()
