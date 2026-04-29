@@ -1260,6 +1260,151 @@ footer {
   padding: 40px 0; font-size: 15px;
 }
 
+/* ── Connections standalone page (out/connections.html) ──────────────── */
+.connections-page {
+  max-width: 720px; margin: 20px auto; padding: 0 0 40px;
+}
+.connections-page h2 { margin: 0 0 6px; font-size: 22px; font-weight: 500; }
+.connections-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 24px;
+}
+.connections-section { margin-bottom: 36px; }
+.connections-section-heading {
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  margin: 0 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+/* Entity cluster card */
+.conn-entity-card {
+  margin: 0 0 20px; padding: 14px 16px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--accent-soft);
+  border-radius: 4px; background: var(--paper); font-size: 14px;
+  line-height: 1.55;
+}
+.conn-entity-name {
+  font-size: 15px; font-weight: 600; color: var(--fg); margin-bottom: 6px;
+}
+.conn-entity-name a { color: var(--accent); text-decoration: none; }
+.conn-entity-name a:hover { text-decoration: underline; }
+.conn-entity-type {
+  font-size: 11px; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  margin-left: 6px; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.conn-project-list { margin: 8px 0; padding-left: 0; list-style: none; }
+.conn-project-item {
+  margin: 0 0 8px; padding: 6px 10px;
+  border: 1px solid var(--rule); border-radius: 3px; background: var(--bg);
+  font-size: 13px;
+}
+.conn-project-name {
+  font-weight: 500; color: var(--fg);
+}
+.conn-project-name a { color: var(--accent); text-decoration: none; }
+.conn-project-name a:hover { text-decoration: underline; }
+.conn-project-meta {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-top: 2px;
+}
+.conn-project-learnings { margin-top: 4px; padding-left: 14px; list-style: disc; }
+.conn-project-learnings li { margin: 2px 0; font-size: 12.5px; color: #4a3a2d; font-style: italic; }
+/* Transfer opportunity card */
+.conn-transfer-card {
+  margin: 0 0 12px; padding: 10px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--ok);
+  border-radius: 4px; background: var(--paper); font-size: 13.5px;
+  line-height: 1.5;
+}
+.conn-transfer-pair {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.conn-transfer-item {
+  padding: 6px 10px; border-radius: 3px; background: var(--bg);
+}
+.conn-transfer-label {
+  font-size: 10.5px; font-weight: 600; color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+  text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px;
+}
+.conn-transfer-text { color: var(--fg); font-style: italic; }
+/* Tag cluster card */
+.conn-tag-card {
+  margin: 0 0 16px; padding: 12px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--chip);
+  border-radius: 4px; background: var(--paper); font-size: 13.5px;
+}
+.conn-tag-name {
+  font-family: ui-monospace, Consolas, monospace;
+  font-weight: 600; color: var(--fg); margin-bottom: 6px;
+}
+.conn-tag-projects {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+.conn-tag-projects a { color: var(--accent); text-decoration: none; }
+.conn-tag-projects a:hover { text-decoration: underline; }
+.connections-empty {
+  color: var(--muted); font-style: italic; text-align: center;
+  padding: 40px 0; font-size: 15px;
+}
+
+/* ── Entity profile pages (out/entities/<slug>.html) ─────────────────── */
+.entity-profile-page {
+  max-width: 720px; margin: 20px auto; padding: 0 0 40px;
+}
+.entity-profile-page h2 { margin: 0 0 4px; font-size: 22px; font-weight: 500; }
+.entity-profile-meta {
+  color: var(--muted); font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+  margin-bottom: 24px;
+}
+.entity-profile-section { margin-bottom: 32px; }
+.entity-profile-section-heading {
+  font-size: 13px; font-weight: 600; color: var(--fg);
+  font-family: ui-monospace, Consolas, monospace;
+  margin: 0 0 10px; padding-bottom: 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.entity-project-card {
+  margin: 0 0 12px; padding: 12px 16px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--accent-soft);
+  border-radius: 4px; background: var(--paper); font-size: 14px;
+}
+.entity-project-card-name {
+  font-weight: 600; color: var(--fg); font-size: 15px; margin-bottom: 4px;
+}
+.entity-project-card-name a { color: var(--accent); text-decoration: none; }
+.entity-project-card-name a:hover { text-decoration: underline; }
+.entity-project-card-meta {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace; margin-bottom: 6px;
+}
+.entity-project-card-learnings {
+  padding-left: 18px; margin: 4px 0; list-style: disc;
+}
+.entity-project-card-learnings li {
+  margin: 3px 0; font-size: 13px; color: #4a3a2d; font-style: italic;
+  line-height: 1.5;
+}
+.entity-learning-item {
+  margin: 0 0 10px; padding: 10px 14px;
+  border: 1px solid var(--rule); border-left: 3px solid var(--ok);
+  border-radius: 4px; background: var(--paper); font-size: 13.5px;
+  line-height: 1.55;
+}
+.entity-learning-text { color: var(--fg); font-style: italic; margin-bottom: 4px; }
+.entity-learning-footer {
+  color: var(--muted); font-size: 11px;
+  font-family: ui-monospace, Consolas, monospace;
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+}
+.entity-learning-footer a { color: var(--accent); text-decoration: none; }
+.entity-learning-footer a:hover { text-decoration: underline; }
+
 /* ── Annotations (Phase E) ───────────────────────────────────────────── */
 /* Annotate button — lives next to the inspect chips */
 .annotate-btn {
@@ -1702,6 +1847,7 @@ FILTER_WIDGET = """
         ['Loops', 'loops', 'loops.html'],
         ['Learnings', 'learnings', 'learnings.html'],
         ['Echoes', 'echoes', 'echoes.html'],
+        ['Connections', 'connections', 'connections.html'],
       ];
       const currentPath = (window.location.pathname || '').toLowerCase();
       navTargets.forEach(([label, key, href]) => {
@@ -3337,8 +3483,9 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
              count=n_files)
 
     # --- entities (named-entity chip: people, libraries, AI models, services) ---
-    # Links each entity name to the entity-filtered feed view so clicking
-    # "React" jumps straight to all days that mention React.
+    # Each chip links to the entity-filtered feed view so clicking "React"
+    # jumps straight to all days that mention React. When a profile page
+    # exists (url key present), a secondary profile link is added alongside.
     if entities:
         type_order = {"person": 0, "ai_model": 1, "library": 2, "service": 3}
         type_labels = {"person": "People", "ai_model": "AI Models",
@@ -3350,12 +3497,21 @@ def _render_activity_disclosure(row: dict, prompts: list[dict], snippets: list[d
         for etype in ("person", "ai_model", "library", "service"):
             if etype not in grouped:
                 continue
-            items_html = "".join(
-                f'<a href="{esc(anchor_base)}index.html#axis=entity&value={esc(ent["key"])}" '
-                f'class="entity-chip entity-{esc(etype)} filterable">'
-                f'{esc(ent["label"])}</a>'
-                for ent in grouped[etype]
-            )
+            items_html_parts = []
+            for ent in grouped[etype]:
+                profile_url = ent.get("url", "")
+                # When a profile page exists, link directly to it.
+                # When not, link to the entity-filtered feed view.
+                if profile_url:
+                    chip_href = f"{anchor_base}{profile_url}"
+                else:
+                    chip_href = f"{anchor_base}index.html#axis=entity&value={esc(ent['key'])}"
+                items_html_parts.append(
+                    f'<a href="{esc(chip_href)}" '
+                    f'class="entity-chip entity-{esc(etype)} filterable">'
+                    f'{esc(ent["label"])}</a>'
+                )
+            items_html = "".join(items_html_parts)
             parts.append(
                 f'<div class="entity-group">'
                 f'<span class="entity-group-label">{esc(type_labels[etype])}</span>'
@@ -4237,11 +4393,13 @@ def render_topic_page(tag: str, prose: str, anchor_base: str = "../", *,
     )
 
 
-def _render_arc_connections(connections: list[dict], anchor_base: str = "../../") -> str:
+def _render_arc_connections(connections: list[dict], anchor_base: str = "../../",
+                             entity_slug_map: dict[str, str] | None = None) -> str:
     """Render the 'Related work in other projects' section for an arc page.
 
     connections: list of connection dicts as returned by
     compute_cross_project_connections()[project_id].
+    entity_slug_map: {canonical_name: slug} for entity profile page links.
 
     Returns empty string when connections list is empty.
     Shows up to 8 connection items to keep the section compact.
@@ -4266,6 +4424,17 @@ def _render_arc_connections(connections: list[dict], anchor_base: str = "../../"
         signal_badge = (
             f'<span class="conn-signal-type">{esc(type_label)}</span>'
         )
+
+        # Linkify entity name to profile page when one exists
+        _emap = entity_slug_map or {}
+        if signal_type == "entity" and name in _emap:
+            _ent_slug = _emap[name]
+            name_html = (
+                f'<a href="{esc(anchor_base)}entities/{esc(_ent_slug)}.html">'
+                f'{esc(name)}</a>'
+            )
+        else:
+            name_html = esc(name)
 
         # Build the project pills: each shows name + date count + optional learning
         proj_parts: list[str] = []
@@ -4307,7 +4476,7 @@ def _render_arc_connections(connections: list[dict], anchor_base: str = "../../"
         items_html.append(
             f'<div class="arc-conn-item">'
             f'  <div class="arc-conn-signal">'
-            f'    {signal_badge}{esc(name)}'
+            f'    {signal_badge}{name_html}'
             f'  </div>'
             f'  <div class="arc-conn-projects">{"".join(proj_parts)}</div>'
             f'  {learning_html}'
@@ -4335,7 +4504,8 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
                     generated_at: str = "",
                     backlinks: list[dict] | None = None,
                     annotations: list[dict] | None = None,
-                    connections: list[dict] | None = None) -> str:
+                    connections: list[dict] | None = None,
+                    entity_slug_map: dict[str, str] | None = None) -> str:
     """Standalone project arc retrospective page.
 
     anchor_base: path from the arc page (out/projects/<name>/index.html)
@@ -4397,7 +4567,10 @@ def render_arc_page(project_name: str, prose: str, anchor_base: str = "../../", 
     ann_html = _render_annotation_block(annotations or [])
 
     # --- Related work in other projects section ---
-    connections_html = _render_arc_connections(connections or [], anchor_base=anchor_base)
+    connections_html = _render_arc_connections(
+        connections or [], anchor_base=anchor_base,
+        entity_slug_map=entity_slug_map,
+    )
 
     return (
         f'<article class="arc-page">'
@@ -5138,5 +5311,257 @@ def render_echoes_page(echoes_by_date: dict[str, dict], anchor_base: str = "./",
         f'  <h2>Echoes</h2>'
         f'  <div class="echoes-meta">{esc(meta)}</div>'
         f'  {sections_html}'
+        f'</div>'
+    )
+
+
+def render_connections_page(connections_graph: dict, anchor_base: str = "./") -> str:
+    """Standalone cross-project connections page (out/connections.html).
+
+    connections_graph: as returned by connections.compute_connections_graph().
+    Three sections:
+      1. Cross-Project Entities — entities active in 2+ projects, sorted by spread.
+      2. Transfer Opportunities — Tier 2 similar-but-different learnings across projects.
+      3. Tag Clusters — tags spanning 2+ projects.
+
+    Entity names link to their profile pages (out/entities/<slug>.html).
+    Project names link to arc pages.
+    """
+    from claudejournal.topics import _safe_slug  # reuse slug helper
+
+    entities = connections_graph.get("entities") or []
+    tag_clusters = connections_graph.get("tag_clusters") or []
+    total = connections_graph.get("total_connections", 0)
+    total_transfer = connections_graph.get("total_transfer_opps", 0)
+
+    if not entities and not tag_clusters:
+        return (
+            '<div class="connections-page">'
+            '  <h2>Connections</h2>'
+            '  <div class="connections-meta">Cross-project entity clusters and transfer opportunities.</div>'
+            '  <div class="connections-empty">No cross-project connections found yet — connections surface once entities appear in 2+ projects.</div>'
+            '</div>'
+        )
+
+    n_entities = len(entities)
+    n_tags = len(tag_clusters)
+    meta_parts = []
+    if n_entities:
+        meta_parts.append(f'{n_entities} shared entit{"ies" if n_entities != 1 else "y"}')
+    if n_tags:
+        meta_parts.append(f'{n_tags} tag cluster{"s" if n_tags != 1 else ""}')
+    if total_transfer:
+        meta_parts.append(f'{total_transfer} transfer opportunit{"ies" if total_transfer != 1 else "y"}')
+    meta = ", ".join(meta_parts) + " across projects"
+
+    sections: list[str] = []
+
+    # ---- Section 1: Cross-project entities ----
+    if entities:
+        cards: list[str] = []
+        for ent in entities[:60]:  # cap at 60 to keep page manageable
+            ename = ent["entity_name"]
+            etype = ent.get("entity_type") or ""
+            slug = _safe_slug(ent.get("canonical_name") or ename)
+            entity_url = f"{anchor_base}entities/{slug}.html"
+            type_badge = (
+                f'<span class="conn-entity-type">{esc(etype)}</span>'
+                if etype else ""
+            )
+            projects_items: list[str] = []
+            for proj in ent["projects"]:
+                arc_url = f"{anchor_base}{proj['arc_url']}"
+                date_range = f"{proj['first_seen']} – {proj['last_seen']}"
+                dc = proj["date_count"]
+                meta_str = f"{dc} day{'s' if dc != 1 else ''} · {date_range}"
+                learnings_html = ""
+                if proj.get("learnings"):
+                    li_items = "".join(
+                        f"<li>{esc(l)}</li>" for l in proj["learnings"][:2]
+                    )
+                    learnings_html = f'<ul class="conn-project-learnings">{li_items}</ul>'
+                projects_items.append(
+                    f'<li class="conn-project-item">'
+                    f'  <div class="conn-project-name">'
+                    f'    <a href="{esc(arc_url)}">{esc(proj["project_name"])}</a>'
+                    f'  </div>'
+                    f'  <div class="conn-project-meta">{esc(meta_str)}</div>'
+                    f'  {learnings_html}'
+                    f'</li>'
+                )
+            projects_list = f'<ul class="conn-project-list">{"".join(projects_items)}</ul>'
+            total_str = (
+                f'{ent["total_projects"]} projects · '
+                f'{ent["total_dates"]} days total'
+            )
+            cards.append(
+                f'<div class="conn-entity-card">'
+                f'  <div class="conn-entity-name">'
+                f'    <a href="{esc(entity_url)}">{esc(ename)}</a>'
+                f'    {type_badge}'
+                f'  </div>'
+                f'  <div class="conn-project-meta">{esc(total_str)}</div>'
+                f'  {projects_list}'
+                f'</div>'
+            )
+        sections.append(
+            f'<div class="connections-section">'
+            f'  <div class="connections-section-heading">Cross-Project Entities</div>'
+            f'  {"".join(cards)}'
+            f'</div>'
+        )
+
+    # ---- Section 2: Transfer opportunities ----
+    all_transfer_cards: list[str] = []
+    for ent in entities:
+        for opp in (ent.get("transfer_opportunities") or []):
+            all_transfer_cards.append(
+                f'<div class="conn-transfer-card">'
+                f'  <div class="conn-transfer-pair">'
+                f'    <div class="conn-transfer-item">'
+                f'      <div class="conn-transfer-label">{esc(opp["project_a"])}</div>'
+                f'      <div class="conn-transfer-text">{esc(opp["learning_a"])}</div>'
+                f'    </div>'
+                f'    <div class="conn-transfer-item">'
+                f'      <div class="conn-transfer-label">{esc(opp["project_b"])}</div>'
+                f'      <div class="conn-transfer-text">{esc(opp["learning_b"])}</div>'
+                f'    </div>'
+                f'  </div>'
+                f'</div>'
+            )
+    if all_transfer_cards:
+        sections.append(
+            f'<div class="connections-section">'
+            f'  <div class="connections-section-heading">Transfer Opportunities</div>'
+            f'  <div class="connections-meta" style="margin-bottom:12px;">'
+            f'    Similar insights from different projects — knowledge that transferred.</div>'
+            f'  {"".join(all_transfer_cards[:20])}'
+            f'</div>'
+        )
+
+    # ---- Section 3: Tag clusters ----
+    if tag_clusters:
+        cards = []
+        for tc in tag_clusters[:40]:
+            proj_links = ", ".join(
+                f'<a href="{esc(anchor_base + p["arc_url"])}">{esc(p["project_name"])}</a>'
+                f' ({p["date_count"]}d)'
+                for p in tc["projects"]
+            )
+            cards.append(
+                f'<div class="conn-tag-card">'
+                f'  <div class="conn-tag-name"><code>{esc(tc["tag"])}</code></div>'
+                f'  <div class="conn-tag-projects">{proj_links}</div>'
+                f'</div>'
+            )
+        sections.append(
+            f'<div class="connections-section">'
+            f'  <div class="connections-section-heading">Tag Clusters</div>'
+            f'  {"".join(cards)}'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="connections-page">'
+        f'  <h2>Connections</h2>'
+        f'  <div class="connections-meta">{esc(meta)}</div>'
+        f'  {"".join(sections)}'
+        f'</div>'
+    )
+
+
+def render_entity_profile_page(entity_data: dict, anchor_base: str = "../") -> str:
+    """Standalone entity profile page (out/entities/<slug>.html).
+
+    entity_data: as returned by entity_pages.build_entity_profile_data().
+    Shows:
+      1. Projects timeline — all projects using this entity with date ranges
+         and key learnings from briefs that actually mention this entity.
+      2. All learnings mentioning this entity.
+
+    Learnings are from briefs that ACTUALLY contain this entity in their
+    brief_entities row (fixes Phase A edge case).
+    """
+    ename = entity_data.get("entity_name", "")
+    etype = entity_data.get("entity_type", "") or ""
+    total_projects = entity_data.get("total_projects", 0)
+    total_dates = entity_data.get("total_dates", 0)
+    projects = entity_data.get("projects") or []
+    all_learnings = entity_data.get("all_learnings") or []
+
+    type_label = f" · {etype}" if etype else ""
+    meta = (
+        f'{total_projects} project{"s" if total_projects != 1 else ""} · '
+        f'{total_dates} day{"s" if total_dates != 1 else ""}'
+        + type_label
+    )
+
+    # Project timeline section
+    project_cards: list[str] = []
+    for proj in projects:
+        arc_url = f"{anchor_base}{proj.get('arc_url', '')}"
+        dc = proj["date_count"]
+        date_range = f"{proj['first_seen']} – {proj['last_seen']}"
+        meta_str = f"{dc} day{'s' if dc != 1 else ''} · {date_range}"
+        learnings_html = ""
+        if proj.get("learnings"):
+            li_items = "".join(f"<li>{esc(l)}</li>" for l in proj["learnings"])
+            learnings_html = f'<ul class="entity-project-card-learnings">{li_items}</ul>'
+        project_cards.append(
+            f'<div class="entity-project-card">'
+            f'  <div class="entity-project-card-name">'
+            f'    <a href="{esc(arc_url)}">{esc(proj["project_name"])}</a>'
+            f'  </div>'
+            f'  <div class="entity-project-card-meta">{esc(meta_str)}</div>'
+            f'  {learnings_html}'
+            f'</div>'
+        )
+
+    projects_section = (
+        f'<div class="entity-profile-section">'
+        f'  <div class="entity-profile-section-heading">Projects</div>'
+        f'  {"".join(project_cards) if project_cards else "<p>No projects found.</p>"}'
+        f'</div>'
+    )
+
+    # All learnings section (from briefs that actually mention this entity)
+    learnings_section = ""
+    if all_learnings:
+        learning_items: list[str] = []
+        for lrn in all_learnings:
+            proj_link = ""
+            if lrn.get("project_name") and lrn.get("arc_url"):
+                arc_url = f"{anchor_base}{lrn['arc_url']}"
+                proj_link = f'<a href="{esc(arc_url)}">{esc(lrn["project_name"])}</a>'
+            else:
+                proj_link = esc(lrn.get("project_name", ""))
+            date_str = lrn.get("date", "")
+            day_url = f"{anchor_base}index.html#{date_str}" if date_str else ""
+            date_link = (
+                f'<a href="{esc(day_url)}">{esc(date_str)}</a>'
+                if day_url else esc(date_str)
+            )
+            learning_items.append(
+                f'<div class="entity-learning-item">'
+                f'  <div class="entity-learning-text">{esc(lrn["text"])}</div>'
+                f'  <div class="entity-learning-footer">'
+                f'    {proj_link}'
+                f'    {date_link}'
+                f'  </div>'
+                f'</div>'
+            )
+        learnings_section = (
+            f'<div class="entity-profile-section">'
+            f'  <div class="entity-profile-section-heading">Learnings</div>'
+            f'  {"".join(learning_items)}'
+            f'</div>'
+        )
+
+    return (
+        f'<div class="entity-profile-page">'
+        f'  <h2>{esc(ename)}</h2>'
+        f'  <div class="entity-profile-meta">{esc(meta)}</div>'
+        f'  {projects_section}'
+        f'  {learnings_section}'
         f'</div>'
     )

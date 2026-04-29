@@ -1,6 +1,7 @@
 """Cross-project connection computation for ClaudeJournal.
 
 Phase A: Render-time callouts — no model calls, pure SQL + Python.
+Phase B: Global connections graph + Tier 2 textual similarity signals.
 
 Core exports:
   compute_cross_project_connections(conn)
@@ -11,6 +12,12 @@ Core exports:
       -> {date: [nudge_dict, ...]}
       Per-date nudges: for each entity/tag on that day, which OTHER projects
       have substantial history with it (threshold: 3+ dates in 2+ other projects).
+
+  compute_connections_graph(conn)
+      -> {entities: [...], tag_clusters: [...]}
+      Full cross-project entity x learnings graph for the Connections page.
+      Includes Tier 2 signals: transfer opportunities (similar-but-different
+      learnings across projects) via significant-word overlap.
 """
 from __future__ import annotations
 
@@ -523,3 +530,248 @@ def compute_all_daily_connections(
         result[date] = nudges[:MAX_DAILY_NUDGES]
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Tier 2 helpers (textual similarity for transfer opportunities)
+# ---------------------------------------------------------------------------
+
+import difflib
+import re as _re
+
+_T2_STOPWORDS = frozenset({
+    "the", "and", "that", "this", "with", "from", "have", "been", "were",
+    "when", "what", "which", "where", "while", "also", "into", "then",
+    "than", "they", "them", "their", "some", "just", "more", "very",
+    "will", "would", "could", "should", "does", "doing", "done", "used",
+    "using", "make", "made", "need", "needs", "needed", "for", "are",
+    "was", "had", "has", "its", "all", "out", "one", "but", "not",
+})
+
+_T2_MIN_WORD_OVERLAP = 4
+_T2_SM_RATIO = 0.72   # Slightly looser than learnings.py's 0.80 —
+                       # cross-project "transfer" is related-but-not-same.
+
+
+def _t2_sig_words(text: str) -> set[str]:
+    """Return significant words for Tier 2 similarity comparison."""
+    tokens = _re.findall(r"[a-zA-Z][a-zA-Z0-9_'-]*", text.lower())
+    return {t for t in tokens if len(t) >= 4 and t not in _T2_STOPWORDS}
+
+
+def _t2_are_related(a: str, b: str) -> bool:
+    """True if two learnings from *different* projects are related enough to
+    be surfaced as a 'transfer opportunity'. Looser than same-project dedup:
+    the intent is 'similar insight, separate context.'
+    """
+    wa = _t2_sig_words(a)
+    wb = _t2_sig_words(b)
+    if not wa or not wb:
+        return False
+    shared = wa & wb
+    if len(shared) >= _T2_MIN_WORD_OVERLAP:
+        return True
+    # SequenceMatcher as a fallback for paraphrase (slightly costly)
+    ratio = difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+    return ratio >= _T2_SM_RATIO
+
+
+# ---------------------------------------------------------------------------
+# Public API: compute_connections_graph  (Phase B, Task 7)
+# ---------------------------------------------------------------------------
+
+def compute_connections_graph(conn: sqlite3.Connection) -> dict:
+    """Build the complete entity x project x learnings graph for connections.html.
+
+    Returns:
+        {
+          "entities": [
+            {
+              "entity_id": str,
+              "entity_name": str,
+              "entity_type": str | None,
+              "canonical_name": str | None,
+              "projects": [
+                {
+                  "project_id": str,
+                  "project_name": str,
+                  "date_count": int,
+                  "first_seen": str,
+                  "last_seen": str,
+                  "learnings": [str, ...],   # up to 4
+                }
+              ],
+              "total_projects": int,
+              "total_dates": int,
+              "transfer_opportunities": [
+                {
+                  "learning_a": str,
+                  "project_a": str,
+                  "learning_b": str,
+                  "project_b": str,
+                }
+              ],
+            },
+            ...   # sorted: total_projects desc, then total_dates desc
+          ],
+          "tag_clusters": [
+            {
+              "tag": str,
+              "projects": [
+                {
+                  "project_id": str,
+                  "project_name": str,
+                  "date_count": int,
+                  "learnings": [str, ...],
+                }
+              ],
+              "total_projects": int,
+            },
+            ...
+          ],
+          "total_connections": int,   # entity + tag clusters with 2+ projects
+          "total_transfer_opps": int,
+        }
+
+    Only entities/tags appearing in 2+ projects are included.
+    Tier 2 transfer opportunities: cross-project learning pairs that share
+    4+ significant words but are NOT identical (word-for-word ratio < 0.95).
+    No model calls — pure Python text similarity.
+    """
+    import urllib.parse as _up
+
+    entity_map = _load_entity_project_map(conn)
+    tag_map = _load_tag_project_map(conn)
+    suppressed_dates = _check_annotations(conn)
+
+    # ------------------------------------------------------------------ #
+    # Build entity list
+    # ------------------------------------------------------------------ #
+    entities_out: list[dict] = []
+    total_transfer = 0
+
+    for eid, proj_map in entity_map.items():
+        if len(proj_map) < 2:
+            continue
+
+        first_proj = next(iter(proj_map.values()))
+        ename = first_proj["entity_name"]
+        etype = first_proj["entity_type"]
+        cname = first_proj["canonical_name"]
+
+        projects_out: list[dict] = []
+        all_learnings_with_proj: list[tuple[str, str]] = []  # (learning, project_name)
+
+        for pid, entry in proj_map.items():
+            active_dates = sorted(
+                d for d in entry["dates"] if d not in suppressed_dates
+            )
+            if not active_dates:
+                continue
+            learnings_clean = entry["learnings"][:4]
+            for l in learnings_clean:
+                all_learnings_with_proj.append((l, entry["project_name"]))
+            projects_out.append({
+                "project_id": pid,
+                "project_name": entry["project_name"],
+                "date_count": len(active_dates),
+                "first_seen": active_dates[0],
+                "last_seen": active_dates[-1],
+                "learnings": learnings_clean,
+                "arc_url": f"projects/{_up.quote(entry['project_name'], safe='')}/index.html",
+            })
+
+        if len(projects_out) < 2:
+            continue
+
+        # Sort projects: most active first
+        projects_out.sort(key=lambda p: -p["date_count"])
+        total_dates = sum(p["date_count"] for p in projects_out)
+
+        # --- Tier 2: transfer opportunities ---
+        transfer_opps: list[dict] = []
+        seen_pairs: set[frozenset] = set()
+        for i in range(len(all_learnings_with_proj)):
+            la, proj_a = all_learnings_with_proj[i]
+            for j in range(i + 1, len(all_learnings_with_proj)):
+                lb, proj_b = all_learnings_with_proj[j]
+                if proj_a == proj_b:
+                    continue  # same project — not a transfer signal
+                pair_key = frozenset([la, lb])
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                # Must be related but NOT word-for-word identical
+                if not _t2_are_related(la, lb):
+                    continue
+                sm = difflib.SequenceMatcher(None, la.lower(), lb.lower()).ratio()
+                if sm >= 0.95:
+                    continue  # identical — skip
+                transfer_opps.append({
+                    "learning_a": la,
+                    "project_a": proj_a,
+                    "learning_b": lb,
+                    "project_b": proj_b,
+                })
+                if len(transfer_opps) >= 3:
+                    break
+            if len(transfer_opps) >= 3:
+                break
+        total_transfer += len(transfer_opps)
+
+        entities_out.append({
+            "entity_id": eid,
+            "entity_name": ename,
+            "entity_type": etype,
+            "canonical_name": cname,
+            "projects": projects_out,
+            "total_projects": len(projects_out),
+            "total_dates": total_dates,
+            "transfer_opportunities": transfer_opps,
+        })
+
+    # Sort: most cross-project first, then by total dates
+    entities_out.sort(key=lambda e: (-e["total_projects"], -e["total_dates"]))
+
+    # ------------------------------------------------------------------ #
+    # Build tag clusters
+    # ------------------------------------------------------------------ #
+    tag_clusters_out: list[dict] = []
+
+    for tag, proj_map in tag_map.items():
+        if len(proj_map) < 2:
+            continue
+
+        proj_list: list[dict] = []
+        for pid, entry in proj_map.items():
+            active_dates = {d for d in entry["dates"] if d not in suppressed_dates}
+            if not active_dates:
+                continue
+            proj_list.append({
+                "project_id": pid,
+                "project_name": entry["project_name"],
+                "date_count": len(active_dates),
+                "learnings": entry["learnings"][:3],
+                "arc_url": f"projects/{_up.quote(entry['project_name'], safe='')}/index.html",
+            })
+
+        if len(proj_list) < 2:
+            continue
+
+        proj_list.sort(key=lambda p: -p["date_count"])
+        tag_clusters_out.append({
+            "tag": tag,
+            "projects": proj_list,
+            "total_projects": len(proj_list),
+        })
+
+    tag_clusters_out.sort(key=lambda tc: -tc["total_projects"])
+
+    total_connections = len(entities_out) + len(tag_clusters_out)
+
+    return {
+        "entities": entities_out,
+        "tag_clusters": tag_clusters_out,
+        "total_connections": total_connections,
+        "total_transfer_opps": total_transfer,
+    }

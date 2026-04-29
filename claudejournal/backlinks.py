@@ -20,6 +20,7 @@ _SCOPE_LABEL = {
     "topic": "Topic",
     "project_arc": "Project",
     "document": "Document",
+    "entity_profile": "Entity",
 }
 
 
@@ -83,6 +84,8 @@ def _friendly_key(scope: str, key: str,
         return document_titles.get(key) or key.replace("-", " ").title()
     if scope == "topic":
         return key.replace("-", " ").title()
+    if scope == "entity_profile":
+        return key.replace("-", " ").title()
     return key
 
 
@@ -111,6 +114,8 @@ def _page_url(scope: str, key: str, anchor_base: str = "../") -> str:
         return f"{ab}projects/{key}/index.html"
     if scope == "document":
         return f"{ab}docs/{key}.html"
+    if scope == "entity_profile":
+        return f"{ab}entities/{key}.html"
     return f"{ab}index.html"
 
 

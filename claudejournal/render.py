@@ -34,10 +34,12 @@ from claudejournal.templates import (
     layout,
     render_arc_page,
     render_chat_page,
+    render_connections_page,
     render_day_entry,
     render_doc_feed_entry,
     render_document_page,
     render_echoes_page,
+    render_entity_profile_page,
     render_feed,
     render_graph_page,
     render_learnings_page,
@@ -50,6 +52,7 @@ from claudejournal.templates import (
 from claudejournal.connections import (
     compute_cross_project_connections as _compute_cross_project_connections,
     compute_all_daily_connections as _compute_all_daily_connections,
+    compute_connections_graph as _compute_connections_graph,
 )
 
 
@@ -501,6 +504,9 @@ def _compute_links_input_hash(conn: sqlite3.Connection,
       * the docs list (id + title pairs) since linkifier behaviour
         depends on it
       * the topics list (tag slug + display) for the same reason
+      * brief_entities contents — entity→arc link type (Phase B) depends
+        on which entities appear in which project's briefs; if brief_entities
+        changes, entity_arc links must be rebuilt too.
 
     Returns a hex string. Equal hash → no link-graph change since last
     render → safe to skip the rebuild.
@@ -530,6 +536,27 @@ def _compute_links_input_hash(conn: sqlite3.Connection,
         h.update(b"|")
         h.update((label or "").encode("utf-8"))
         h.update(b"\x07")
+    # Phase B: include brief_entities summary so entity_arc link changes
+    # are detected. Use (entity_id, project_id, date) tuples — cheap.
+    h.update(b"\x08entities\x08")
+    try:
+        be_rows = conn.execute(
+            """SELECT be.entity_id, sb.project_id, be.date
+               FROM brief_entities be
+               JOIN session_briefs sb
+                 ON sb.session_id = be.session_id AND sb.date = be.date
+               WHERE be.date != ''
+               ORDER BY be.entity_id, sb.project_id, be.date"""
+        ).fetchall()
+        for br in be_rows:
+            h.update((br["entity_id"] or "").encode("utf-8"))
+            h.update(b"|")
+            h.update((br["project_id"] or "").encode("utf-8"))
+            h.update(b"|")
+            h.update((br["date"] or "").encode("utf-8"))
+            h.update(b"\x09")
+    except Exception:
+        pass  # brief_entities may not exist on very old DBs
     return h.hexdigest()[:32]
 
 
@@ -625,7 +652,8 @@ def _rebuild_links(conn: sqlite3.Connection,
 
 
 def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
-                      slug_map: dict[str, str] | None = None) -> None:
+                      slug_map: dict[str, str] | None = None,
+                      entity_slug_map: dict[str, str] | None = None) -> None:
     """Serialize the materialized `links` table as a D3-compatible nodes+edges
     JSON file written to out_dir/graph.json.
 
@@ -647,6 +675,8 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
     def _node_id(scope: str, key: str) -> str:
         return f"{scope}:{key}"
 
+    _entity_slug_map = entity_slug_map or {}
+
     def _node_url(scope: str, key: str) -> str:
         """Return a root-relative URL suitable for the graph page (which lives
         at out/graph.html, one level below the site root)."""
@@ -666,6 +696,9 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
             return f"./projects/{key}/index.html"
         if scope == "document":
             return f"./docs/{key}.html"
+        if scope == "entity_profile":
+            # key is the entity slug
+            return f"./entities/{key}.html"
         return "./index.html"
 
     def _node_label(scope: str, key: str) -> str:
@@ -699,6 +732,14 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
             if row:
                 return row["title"] or row["original_filename"] or key
             return key
+        if scope == "entity_profile":
+            # key is the entity slug; resolve to entity name via entities table
+            row = conn.execute(
+                "SELECT name FROM entities WHERE canonical_name = ? OR name = ?", (key, key)
+            ).fetchone()
+            if row:
+                return row["name"]
+            return key.replace("-", " ").title()
         return key
 
     # Resolve project_id → display_name once so we don't re-query per node.
@@ -751,6 +792,9 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
         elif scope == "monthly":
             f["month"] = key
             f["year"] = key[:4]
+        elif scope == "entity_profile":
+            # entity_profile nodes carry the entity slug as key
+            f["entity"] = key
         return f
 
     for lr in link_rows:
@@ -778,6 +822,64 @@ def _write_graph_json(conn: sqlite3.Connection, out_dir: Path,
     (out_dir / "graph.json").write_text(
         json.dumps(graph, separators=(",", ":")), encoding="utf-8"
     )
+
+
+def _add_entity_arc_links(
+    conn: sqlite3.Connection,
+    qualifying_entities: list[dict],
+    entity_slug_map: dict[str, str],
+) -> int:
+    """Add entity_profile → project_arc link rows to the materialized links table.
+
+    For each qualifying entity, emits one link per project the entity appears in:
+      source: (entity_profile, entity_slug) → target: (project_arc, project_id)
+      link_type: 'entity_arc'
+
+    This makes entities first-class nodes in the link graph alongside topics,
+    docs, and arcs. The entity_slug_map provides canonical_name → slug mapping.
+
+    Returns the number of new rows inserted.
+    """
+    if not qualifying_entities or not entity_slug_map:
+        return 0
+
+    # Delete existing entity_arc rows first (idempotent rebuild).
+    conn.execute("DELETE FROM links WHERE link_type = 'entity_arc'")
+
+    inserts: list[tuple[str, str, str, str, str]] = []
+
+    for ent in qualifying_entities:
+        eid = ent["entity_id"]
+        cname = ent.get("canonical_name") or ent.get("entity_name", "")
+        slug = entity_slug_map.get(cname)
+        if not slug:
+            continue
+        # Find all project_ids this entity appears in
+        proj_rows = conn.execute(
+            """SELECT DISTINCT sb.project_id
+               FROM brief_entities be
+               JOIN session_briefs sb
+                 ON sb.session_id = be.session_id AND sb.date = be.date
+               WHERE be.entity_id = ? AND be.date != ''""",
+            (eid,),
+        ).fetchall()
+        for pr in proj_rows:
+            inserts.append((
+                "entity_profile", slug,
+                "project_arc", pr["project_id"],
+                "entity_arc",
+            ))
+
+    if inserts:
+        conn.executemany(
+            "INSERT OR IGNORE INTO links "
+            "(source_scope, source_key, target_scope, target_key, link_type) "
+            "VALUES (?, ?, ?, ?, ?)",
+            inserts,
+        )
+        conn.commit()
+
+    return len(inserts)
 
 
 def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
@@ -858,12 +960,32 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
     # maps each date to a list of entity dicts {key, label, type} for both
     # the data-entities attr (uses 'key' = canonical_name) and the inspect chip.
     from claudejournal.entities import get_all_entities_with_counts as _get_entity_counts
+    from claudejournal.topics import _safe_slug as _entity_safe_slug
+    from claudejournal.entity_pages import qualifying_entities as _qualifying_entities_fn
     _raw_entity_list = _get_entity_counts(conn)
-    entity_opts = [
-        {"key": e["canonical_name"], "label": e["name"], "type": e["type"]}
-        for e in _raw_entity_list
-    ]
-    # Build {date: [{key, label, type}, ...]} for entry annotation and inspect chip.
+    # Build the qualifying entity set for slug URL generation.
+    # These are entities that will get profile pages — only those get a url.
+    _qualifying_entity_rows = _qualifying_entities_fn(conn)
+    _qualifying_cnames: set[str] = {
+        row.get("canonical_name") or row.get("entity_name", "")
+        for row in _qualifying_entity_rows
+    }
+    # Pre-compute entity_slug_map here (canonical_name -> slug) so arc pages
+    # can link entity names in "Related work" sections to profile pages.
+    # This is purely a computation; no files are written at this point.
+    _entity_slug_map_global: dict[str, str] = {
+        cname: _entity_safe_slug(cname)
+        for cname in _qualifying_cnames
+        if cname
+    }
+    entity_opts = []
+    for e in _raw_entity_list:
+        cname = e["canonical_name"]
+        opt: dict = {"key": cname, "label": e["name"], "type": e["type"]}
+        if cname in _qualifying_cnames:
+            opt["url"] = f"entities/{_entity_safe_slug(cname)}.html"
+        entity_opts.append(opt)
+    # Build {date: [{key, label, type, url?}, ...]} for entry annotation and inspect chip.
     # One query fetches all (date, entity) pairs; we fan out to dicts using the
     # entity_opts lookup map (keyed by canonical_name).
     entities_by_date: dict[str, list[dict]] = {}
@@ -877,11 +999,15 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                ORDER BY be.date, e.type, e.name"""
         ).fetchall()
         for _r in _entity_date_rows:
-            entities_by_date.setdefault(_r["date"], []).append({
+            _opt = _ent_opt_map.get(_r["canonical_name"], {})
+            _ent_dict: dict = {
                 "key": _r["canonical_name"],
                 "label": _r["name"],
                 "type": _r["type"],
-            })
+            }
+            if "url" in _opt:
+                _ent_dict["url"] = _opt["url"]
+            entities_by_date.setdefault(_r["date"], []).append(_ent_dict)
 
     # Topic pages data for Overview mode.  Build slug map now so the JS gets
     # the correct hrefs. Only tags with a generated prose page are included.
@@ -1226,6 +1352,7 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                 backlinks=arc_backlinks,
                 annotations=_annotations_by_arc.get(pid, []),
                 connections=_connections_by_project.get(pid, []),
+                entity_slug_map=_entity_slug_map_global,
             )
             header = render_site_header(
                 site_title="ClaudeJournal",
@@ -1432,25 +1559,9 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
         (out_dir / "daily" / f"{date}.html").write_text(html_page, encoding="utf-8")
         stats["daily_redirect"] += 1
 
-    # ---------- Static graph.json + graph.html for the D3 link-graph view ----------
-    _write_graph_json(conn, out_dir, slug_map=_slug_map_global)
-    _node_count = conn.execute(
-        "SELECT COUNT(DISTINCT source_scope || ':' || source_key) + "
-        "COUNT(DISTINCT target_scope || ':' || target_key) FROM links"
-    ).fetchone()[0] or 0
-    _edge_count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] or 0
-    graph_body = render_graph_page(node_count=_node_count, edge_count=_edge_count)
-    graph_header = render_site_header(
-        site_title="ClaudeJournal",
-        subtitle="Link Graph",
-        **filter_data,
-    )
-    (out_dir / "graph.html").write_text(
-        layout("Link Graph", graph_header + graph_body + "<footer>claudejournal</footer>",
-               anchor_base="./"),
-        encoding="utf-8",
-    )
-    stats["graph"] = 1
+    # graph.json + graph.html are written AFTER entity pages so entity_profile
+    # nodes are included. See the "Static graph.json + graph.html" block below
+    # (after the entity pages section).
 
     # ---------- Open loops standing page (out/loops.html) ----------
     # Reuse the pre-computed list from the feed banners pass above.
@@ -1499,6 +1610,90 @@ def render_site(db_path: Path, out_dir: Path, claude_home: Path) -> dict:
                anchor_base="./"),
         encoding="utf-8",
     )
+
+    # ---------- Connections page (out/connections.html) ----------
+    # Reuse the pre-computed cross-project data from Phase A pass above,
+    # but compute the full graph (with Tier 2 transfer opportunities).
+    # This is separate from _connections_by_project — the graph includes
+    # all entities/tags, not just per-project slices.
+    _connections_graph = _compute_connections_graph(conn)
+    connections_body = render_connections_page(_connections_graph, anchor_base="./")
+    connections_header = render_site_header(
+        site_title="ClaudeJournal",
+        subtitle=(
+            f"Connections · {_connections_graph['total_connections']} cross-project clusters"
+        ),
+        **filter_data,
+    )
+    (out_dir / "connections.html").write_text(
+        layout("Connections",
+               connections_header + connections_body + "<footer>claudejournal</footer>",
+               anchor_base="./"),
+        encoding="utf-8",
+    )
+    stats["connections_page"] = 1
+    stats["connections_graph_entities"] = len(_connections_graph.get("entities") or [])
+    stats["connections_graph_tags"] = len(_connections_graph.get("tag_clusters") or [])
+    stats["connections_transfer_opps"] = _connections_graph.get("total_transfer_opps", 0)
+
+    # ---------- Entity profile pages (out/entities/<slug>.html) ----------
+    from claudejournal.entity_pages import build_entity_profile_data
+    (out_dir / "entities").mkdir(exist_ok=True)
+    # Reuse pre-computed qualifying list and slug map from entity_opts section above.
+    _qualifying = _qualifying_entity_rows
+    entity_slug_map: dict[str, str] = _entity_slug_map_global
+    stats["entity_pages"] = 0
+    for _ent_row in _qualifying:
+        _ent_data = build_entity_profile_data(conn, _ent_row["entity_id"])
+        if not _ent_data:
+            continue
+        _cname = _ent_data.get("canonical_name") or _ent_data.get("entity_name", "")
+        _slug = entity_slug_map.get(_cname) or _entity_safe_slug(_cname)
+        _profile_html = render_entity_profile_page(_ent_data, anchor_base="../")
+        _profile_header = render_site_header(
+            site_title="ClaudeJournal",
+            subtitle=f"Entity · {_ent_data['entity_name']}",
+            **filter_data,
+        )
+        (out_dir / "entities" / f"{_slug}.html").write_text(
+            layout(
+                _ent_data["entity_name"],
+                _profile_header + _profile_html + "<footer>claudejournal</footer>",
+                anchor_base="../",
+            ),
+            encoding="utf-8",
+        )
+        stats["entity_pages"] += 1
+
+    # ---------- Extend links table with entity→arc cross-references ----------
+    # Now that entity profile pages exist, add entity_profile link rows to
+    # the links table so they show up in graph.html.
+    _add_entity_arc_links(conn, _qualifying, entity_slug_map)
+    stats["entity_arc_links"] = conn.execute(
+        "SELECT COUNT(*) FROM links WHERE link_type = 'entity_arc'"
+    ).fetchone()[0] or 0
+
+    # ---------- Static graph.json + graph.html for the D3 link-graph view ----------
+    # Written here (AFTER entity pages) so entity_profile nodes are included.
+    _write_graph_json(conn, out_dir, slug_map=_slug_map_global,
+                      entity_slug_map=entity_slug_map)
+    _node_count = conn.execute(
+        "SELECT COUNT(DISTINCT source_scope || ':' || source_key) + "
+        "COUNT(DISTINCT target_scope || ':' || target_key) FROM links"
+    ).fetchone()[0] or 0
+    _edge_count = conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] or 0
+    graph_body = render_graph_page(node_count=_node_count, edge_count=_edge_count)
+    graph_header = render_site_header(
+        site_title="ClaudeJournal",
+        subtitle="Link Graph",
+        **filter_data,
+    )
+    (out_dir / "graph.html").write_text(
+        layout("Link Graph", graph_header + graph_body + "<footer>claudejournal</footer>",
+               anchor_base="./"),
+        encoding="utf-8",
+    )
+    stats["graph"] = 1
 
     conn.close()
     return stats
