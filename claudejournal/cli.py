@@ -476,9 +476,25 @@ def main(argv: list[str] | None = None) -> int:
                         question = (payload.get("question") or "").strip()
                         if not question:
                             self._reply({"error": "empty question"}, 400); return
+                        # Optional multi-turn context — list of {role, text}
+                        # dicts, oldest first. Conversation lives only in
+                        # the browser (no server-side persistence), so the
+                        # client is the source of truth for what counts as
+                        # "prior." We sanitize defensively so a weird payload
+                        # can't slip into the chat.ask() call.
+                        raw_history = payload.get("history") or []
+                        history: list[dict] = []
+                        if isinstance(raw_history, list):
+                            for turn in raw_history[-16:]:  # hard cap; widget caps at 8 turns × 2 roles
+                                if not isinstance(turn, dict):
+                                    continue
+                                role = turn.get("role")
+                                text = turn.get("text")
+                                if role in ("user", "assistant") and isinstance(text, str) and text.strip():
+                                    history.append({"role": role, "text": text})
                         conn = connect(cfg.db_path)
                         try:
-                            result = chatmod.ask(conn, question)
+                            result = chatmod.ask(conn, question, history=history)
                         finally:
                             conn.close()
                         self._reply({

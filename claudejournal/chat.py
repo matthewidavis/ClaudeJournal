@@ -33,15 +33,57 @@ Non-negotiable grounding rules — keep these even while sounding casual:
 9. PROJECTS MENTIONED BY NAME USE THEIR REAL NAMES from the excerpts (BNChat, VRAgent001, PTZOPTICSLABS, etc). Don't invent or abbreviate."""
 
 
-def _build_chat_message(question: str, hits: list[Hit]) -> str:
+def _build_chat_message(question: str, hits: list[Hit],
+                        history: list[dict] | None = None) -> str:
+    """Build the user-side message sent to the chat model.
+
+    `history`: optional list of prior turns as {role, text} dicts. When
+    present, the prior conversation is rendered above the current
+    question so the model has multi-turn context. Each request is still
+    a single CLI invocation — we're constructing the multi-turn
+    transcript in-message, not relying on Claude CLI's session memory.
+    """
+    history = history or []
+
     if not hits:
+        # Even with prior history, an empty retrieval result for the
+        # current question is the honest signal — answer accordingly.
+        prior_block = ""
+        if history:
+            prior_lines = ["PRIOR CONVERSATION:"]
+            for turn in history:
+                role = turn.get("role", "user")
+                tag = "User" if role == "user" else "You"
+                txt = (turn.get("text") or "").strip()
+                if txt:
+                    prior_lines.append(f"> {tag}: {txt}")
+            prior_lines.append("")
+            prior_block = "\n".join(prior_lines) + "\n"
         return (
+            f"{prior_block}"
             f"QUESTION: {question}\n\n"
             "No matching journal entries were found.\n\n"
             "Reply: 'I don't have anything in the journal about that.'"
         )
 
-    lines = [f"QUESTION: {question}", "", "RETRIEVED EXCERPTS (ordered by relevance):", ""]
+    lines: list[str] = []
+
+    if history:
+        lines.append("PRIOR CONVERSATION (for context — already part of "
+                     "this dialogue, do not re-summarise):")
+        for turn in history:
+            role = turn.get("role", "user")
+            tag = "User" if role == "user" else "You"
+            txt = (turn.get("text") or "").strip()
+            if txt:
+                lines.append(f"> {tag}: {txt}")
+        lines.append("")
+        lines.append(f"CURRENT QUESTION: {question}")
+    else:
+        lines.append(f"QUESTION: {question}")
+
+    lines.extend(["", "RETRIEVED EXCERPTS (ordered by relevance — drawn "
+                  "for the CURRENT question):", ""])
     for i, h in enumerate(hits, 1):
         head = h.title
         if h.date:
@@ -62,8 +104,34 @@ def _build_chat_message(question: str, hits: list[Hit]) -> str:
         lines.append("  " + "  ".join(f"[{d}]" for d in dates))
         lines.append("")
 
-    lines.append("Answer the question now, following all rules.")
+    if history:
+        lines.append("Answer the CURRENT question, drawing on the prior "
+                     "conversation for context. Don't re-recap what the "
+                     "prior turns already established.")
+    else:
+        lines.append("Answer the question now, following all rules.")
     return "\n".join(lines)
+
+
+def _retrieval_query(question: str, history: list[dict] | None = None) -> str:
+    """Build the query string used for RAG retrieval.
+
+    Vague follow-up questions like "and what about X?" don't retrieve
+    well on their own — we prepend the last 1–2 user questions so the
+    BM25/vector search has the topic context. Only user turns are
+    included; assistant answers would dilute the query with restated
+    journal prose.
+    """
+    history = history or []
+    prior_user_qs = [
+        (turn.get("text") or "").strip()
+        for turn in history
+        if turn.get("role") == "user"
+    ][-2:]
+    prior_user_qs = [q for q in prior_user_qs if q]
+    if not prior_user_qs:
+        return question
+    return " | ".join(prior_user_qs + [question])
 
 
 @dataclass
@@ -74,9 +142,21 @@ class ChatAnswer:
 
 
 def ask(conn, question: str, *, model: str = "sonnet", k: int = 8,
-        binary: str = "claude") -> ChatAnswer:
-    hits = retrieve(conn, question, k=k)
-    user_msg = _build_chat_message(question, hits)
+        binary: str = "claude",
+        history: list[dict] | None = None) -> ChatAnswer:
+    """Answer a journal question with optional multi-turn context.
+
+    `history`: list of prior turns as {role: 'user'|'assistant', text}
+      dicts, oldest first. When present, the model sees the prior
+      conversation (constructed in-message — we still call the CLI as
+      a single non-persistent invocation) and the RAG query is enriched
+      with the last 1–2 user questions so vague follow-ups resolve
+      against the right corpus context. Empty / None means single-shot.
+    """
+    history = history or []
+    rag_query = _retrieval_query(question, history)
+    hits = retrieve(conn, rag_query, k=k)
+    user_msg = _build_chat_message(question, hits, history=history)
 
     cmd = [
         binary, "-p",

@@ -1003,6 +1003,17 @@ a.topic-link:hover { border-bottom-style: solid; }
   background: var(--accent); color: var(--paper); border-radius: 6px; cursor: pointer;
 }
 #chat-form button:disabled { opacity: 0.5; cursor: wait; }
+/* Clear button — quieter sibling to Ask. Outline-only on paper, fades out
+   when the conversation is empty (no history to clear). */
+#chat-clear {
+  background: var(--paper); color: var(--muted);
+  border: 1px solid var(--rule);
+  padding: 10px 14px;
+}
+#chat-clear:hover:not(:disabled) {
+  border-color: var(--accent-soft); color: var(--fg);
+}
+#chat-clear:disabled { opacity: 0.35; cursor: default; }
 
 footer {
   color: var(--muted); font-size: 12px; margin-top: 64px;
@@ -2934,6 +2945,7 @@ CHAT_WIDGET = """
     <form id="chat-form">
       <input id="chat-input" type="text" placeholder="ask anything..." autocomplete="off" required>
       <button type="submit">Ask</button>
+      <button id="chat-clear" type="button" title="Clear conversation" aria-label="Clear conversation">Clear</button>
     </form>
   </div>
 </div>
@@ -2965,6 +2977,29 @@ CHAT_WIDGET = """
   const log = document.getElementById('chat-log');
   const form = document.getElementById('chat-form');
   const input = document.getElementById('chat-input');
+  const askBtn = form.querySelector('button[type="submit"]');
+  const clearBtn = document.getElementById('chat-clear');
+
+  // Conversation lives in browser memory only. Survives modal
+  // close+reopen because it's tied to page lifetime, not modal visibility.
+  // Resets on page reload, navigation away, or clicking Clear. Capped at
+  // the last MAX_TURNS user+assistant pairs so the prompt sent to the
+  // server doesn't grow unbounded; older turns are dropped silently.
+  const MAX_TURNS = 8;
+  const history = [];
+
+  function pushTurn(role, text) {
+    history.push({role, text});
+    // Trim from the front when over the cap. Each round-trip is two
+    // entries (user + assistant), so cap on entry count is 2 * MAX_TURNS.
+    while (history.length > 2 * MAX_TURNS) history.shift();
+    syncClearState();
+  }
+  function syncClearState() {
+    if (clearBtn) clearBtn.disabled = history.length === 0;
+  }
+  syncClearState();
+
   function open() { modal.classList.add('open'); setTimeout(() => input.focus(), 50); }
   function close() { modal.classList.remove('open'); }
   fab.addEventListener('click', open);
@@ -2973,31 +3008,58 @@ CHAT_WIDGET = """
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && modal.classList.contains('open')) close();
   });
+
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      // No confirmation: page-reload clears anyway, this is just a faster
+      // path. Visually wipe the log; reset history; refocus input.
+      history.length = 0;
+      log.innerHTML = '';
+      syncClearState();
+      input.focus();
+    });
+  }
+
   form.addEventListener('submit', async e => {
     e.preventDefault();
     const q = input.value.trim(); if (!q) return;
-    const btn = form.querySelector('button'); btn.disabled = true;
+    askBtn.disabled = true;
+    if (clearBtn) clearBtn.disabled = true;
     const qRow = document.createElement('div'); qRow.className = 'q-row'; qRow.textContent = '> ' + q;
     const aRow = document.createElement('div'); aRow.className = 'a-row';
     aRow.innerHTML = '<p class="loading">asking...</p>';
     log.append(qRow, aRow); input.value = '';
     aRow.scrollIntoView({behavior:'smooth', block:'end'});
+    // Send the conversation as it stood BEFORE this question — the new
+    // question is the `question` field, prior turns are the `history`.
+    // The server sees them as separate fields so it can frame the prompt
+    // correctly (current question gets retrieval, prior turns supply
+    // dialogue context only).
+    const priorHistory = history.slice();
     try {
       const r = await fetch('/api/ask', {method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({question: q})});
+        body: JSON.stringify({question: q, history: priorHistory})});
       const data = await r.json();
-      if (data.error) { aRow.innerHTML = `<p class="loading">error: ${esc(data.error)}</p>`; }
+      if (data.error) {
+        aRow.innerHTML = `<p class="loading">error: ${esc(data.error)}</p>`;
+        // Don't push a failed turn into history — re-asking the same
+        // question on retry should still feel like the first attempt.
+      }
       else {
         const src = (data.sources||[]).map(s =>
           `${s.kind}@${s.date||'-'}${s.project_name ? ' · '+s.project_name : ''}`).join(' · ');
         aRow.innerHTML = renderAnswer(data.answer) +
           (src ? `<div class="sources">${esc(src)}</div>` : '');
+        pushTurn('user', q);
+        pushTurn('assistant', data.answer || '');
       }
     } catch (err) {
       aRow.innerHTML = `<p class="loading">error: ${esc(err.message)}</p>`;
     } finally {
-      btn.disabled = false; input.focus();
+      askBtn.disabled = false;
+      syncClearState();
+      input.focus();
       aRow.scrollIntoView({behavior:'smooth', block:'end'});
     }
   });
