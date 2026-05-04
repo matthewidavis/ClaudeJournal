@@ -23,10 +23,20 @@ from claudejournal.narrate import (
 # Bumping this invalidates every monthly rollup on next run. Keep in sync
 # with the MONTHLY_SYSTEM prompt below when its semantics change.
 # v2: annotation prompt-pins added (Phase E v2).
-MONTHLY_PROMPT_VERSION = "v2"
+MONTHLY_PROMPT_VERSION = "v3"
+# v3 (2026-05-02): hardened the role framing and added explicit
+# sparse-input edge-case guidance after a real failure where a May
+# rollup with 1 anchor and 0 weeklies produced "I don't have access
+# to journal tools yet — permission hasn't been granted" rather than
+# prose. The upstream narrate_month() gate now refuses to even call
+# the model on too-thin inputs (see _has_enough_material()), but the
+# prompt hardening protects against future edge cases the gate misses.
 
 
 MONTHLY_SYSTEM = """You are the user's journal, producing a short monthly retrospective in their first-person voice, built on top of the weekly rollups and daily entries from that month.
+
+ROLE — read this carefully:
+You are NOT an assistant. You are NOT Claude Code. You have no tools to ask permission for, no user to address, no chat to engage in. You are the journal narrator producing prose for the journal page. The only valid output is the retrospective prose itself, in the user's first-person voice. Never refer to yourself, the model, tools, permissions, sessions, or "the journal" as a third party — you ARE the journal speaking as the user.
 
 Rules:
 1. First person, past tense, reflective. Bigger lens than weekly — think arcs and themes of the month, not week-by-week recap.
@@ -34,7 +44,10 @@ Rules:
 3. Cite specific days with [YYYY-MM-DD] brackets. Only dates in the ALLOWED ANCHORS list are valid. Forward references forbidden.
 4. Length: 250-500 words. Reflective, not exhaustive. A month-end pause, not a report.
 5. NEVER invent — every concrete detail must appear in the supplied rollups or daily entries.
-6. No preamble, no meta, no headings. Start with the first sentence. End with whatever sentiment the month's contents earn."""
+6. No preamble, no meta, no headings. Start with the first sentence. End with whatever sentiment the month's contents earn.
+
+EDGE CASE — sparse input:
+If the supplied rollups + anchors genuinely don't contain enough material to write a meaningful retrospective (early in a month, an unusually quiet stretch), output a single short paragraph in the user's voice that frames the month as still unfolding. Example shape: "The month is still young — only a couple of days on record so far, mostly [whatever the anchor dates' activity was]. The shape of it hasn't emerged yet." Do NOT request permissions, ask questions, refuse the task, mention tools, or describe what would help you write better. Just write the short honest framing and stop."""
 
 
 def _ym_of(date_str: str) -> str:
@@ -143,6 +156,31 @@ def _build_monthly_message(year_month: str, weeklies: list[dict],
     return "\n".join(lines)
 
 
+# Minimum source-material thresholds before we'll synthesise a monthly
+# retrospective. Below these, the model has nothing real to weave a
+# month-shape from and tends to either fabricate or wander off-script
+# (see v2→v3 prompt-version bump comment for the failure that drove
+# this gate). Tuned for "early-month skip, late-month commit": a fresh
+# May 2nd has 1 anchor, 0 weeklies → skip. A month with even one full
+# weekly rollup is enough to write a real retrospective even without
+# all daily anchors backfilled.
+_MIN_ANCHORS_FOR_MONTHLY = 5
+_MIN_WEEKLIES_FOR_MONTHLY = 1
+
+
+def _has_enough_material(weeklies: list[dict], anchor_dates: list[str]) -> bool:
+    """True when the month has accumulated enough source data to write
+    a meaningful retrospective. Either a weekly rollup OR enough daily
+    anchors qualifies; together they're a clear yes. Fewer than the
+    minimums = skip generation upstream rather than burn a model call
+    on input the prompt can't honestly produce prose from."""
+    if len(weeklies) >= _MIN_WEEKLIES_FOR_MONTHLY:
+        return True
+    if len(anchor_dates) >= _MIN_ANCHORS_FOR_MONTHLY:
+        return True
+    return False
+
+
 def narrate_month(conn: sqlite3.Connection, year_month: str, *,
                   model: str = "sonnet", force: bool = False,
                   binary: str = "claude") -> dict | None:
@@ -150,6 +188,14 @@ def narrate_month(conn: sqlite3.Connection, year_month: str, *,
     anchor_dates = _load_daily_dates(conn, year_month)
     if not weeklies and not anchor_dates:
         return None
+    if not _has_enough_material(weeklies, anchor_dates):
+        # Not yet enough source. Return a documented skip rather than
+        # call the model on degenerate input.
+        return {"year_month": year_month, "skipped": True,
+                "reason": f"too_thin (weeklies={len(weeklies)}, "
+                          f"anchors={len(anchor_dates)}, "
+                          f"min_weeklies={_MIN_WEEKLIES_FOR_MONTHLY}, "
+                          f"min_anchors={_MIN_ANCHORS_FOR_MONTHLY})"}
 
     # Phase E v2: load monthly-scoped annotations so they participate in the hash
     # and are injected into the prompt as PINNED CORRECTIONS.
