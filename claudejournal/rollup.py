@@ -22,10 +22,20 @@ from claudejournal.narrate import (
 # Bumping this invalidates every weekly rollup on next run. Keep in sync
 # with the ROLLUP_SYSTEM prompt below when its semantics change.
 # v2: annotation prompt-pins added (Phase E v2).
-ROLLUP_PROMPT_VERSION = "v2"
+ROLLUP_PROMPT_VERSION = "v3"
+# v3 (2026-05-02): hardened the role framing and added a sparse-input
+# edge case clause — same defensive shape as monthly v2→v3 after the
+# May 2026 monthly produced "I don't have access to journal tools yet
+# — permission hasn't been granted" instead of prose. The upstream
+# narrate_week() gate now refuses to call the model on too-thin weeks
+# (see _has_enough_material), and the prompt protects against any
+# future degenerate input that slips past the gate.
 
 
 ROLLUP_SYSTEM = """You are the user's journal, producing a short weekly retrospective in their first-person voice, built on top of their daily diary entries from the past week.
+
+ROLE — read this carefully:
+You are NOT an assistant. You are NOT Claude Code. You have no tools to ask permission for, no user to address, no chat to engage in. You are the journal narrator producing prose for the journal page. The only valid output is the retrospective prose itself, in the user's first-person voice. Never refer to yourself, the model, tools, permissions, sessions, or "the journal" as a third party — you ARE the journal speaking as the user.
 
 Rules:
 1. First person, past tense, reflective. This is a looking-back entry, not a play-by-play.
@@ -33,7 +43,10 @@ Rules:
 3. Cite every reference to a specific day with a [YYYY-MM-DD] bracket. Only the dates supplied in the ALLOWED ANCHORS list are citeable. Forward references forbidden.
 4. Length: 150-350 words. Short, reflective, not exhaustive.
 5. NEVER invent — every concrete detail must appear in the supplied daily entries.
-6. No preamble, no meta, no headings. Start with the first sentence. End with a closing sentiment earned by the week's content, or just stop."""
+6. No preamble, no meta, no headings. Start with the first sentence. End with a closing sentiment earned by the week's content, or just stop.
+
+EDGE CASE — sparse input:
+If the supplied dailies genuinely don't contain enough material to write a meaningful weekly retrospective (early in a week, an unusually quiet stretch), output a single short paragraph in the user's voice that frames the week as still unfolding. Example shape: "Only a couple of days on record so far this week — mostly [whatever the entries cover]. The shape of the week hasn't emerged yet." Do NOT request permissions, ask questions, refuse the task, mention tools, or describe what would help you write better. Just write the short honest framing and stop."""
 
 
 def _week_bounds(iso_week: str) -> tuple[str, str]:
@@ -119,6 +132,23 @@ def _build_rollup_message(iso_week: str, dailies: list[dict],
     return "\n".join(lines)
 
 
+# Minimum number of daily narrations before we'll synthesise a weekly
+# retrospective. Tuned the same way monthly is — "early-week skip,
+# late-week commit". Below this, the daily entries themselves are
+# already richer than any synthesised prose, and the model tends to
+# either fabricate or drift into a chat-assistant role asking for
+# permissions (the failure that drove v2→v3 in monthly). Symmetric
+# defense at the weekly layer.
+_MIN_DAILIES_FOR_WEEKLY = 3
+
+
+def _has_enough_material(dailies: list[dict]) -> bool:
+    """True when the week has accumulated enough source data to write
+    a meaningful retrospective. Below the floor, return a documented
+    skip upstream rather than burn a model call on degenerate input."""
+    return len(dailies) >= _MIN_DAILIES_FOR_WEEKLY
+
+
 def narrate_week(conn: sqlite3.Connection, iso_week: str, *,
                  model: str = "sonnet", force: bool = False,
                  binary: str = "claude") -> dict | None:
@@ -126,6 +156,10 @@ def narrate_week(conn: sqlite3.Connection, iso_week: str, *,
     dailies = _load_daily_for_week(conn, iso_week)
     if not dailies:
         return None
+    if not _has_enough_material(dailies):
+        return {"iso_week": iso_week, "skipped": True,
+                "reason": f"too_thin (dailies={len(dailies)}, "
+                          f"min_dailies={_MIN_DAILIES_FOR_WEEKLY})"}
 
     # Phase E v2: load weekly-scoped annotations so they participate in the hash
     # and are injected into the prompt as PINNED CORRECTIONS.
